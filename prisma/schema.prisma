@@ -1,0 +1,173 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Perfil {
+  ADMIN
+  VENDEDOR
+  ENTREGADOR
+}
+
+enum TipoMovimentacaoEstoque {
+  ENTRADA
+  SAIDA
+}
+
+enum TipoMovimentacaoBandeja {
+  EMPRESTIMO
+  DEVOLUCAO
+}
+
+enum StatusVenda {
+  ORCAMENTO
+  CONFIRMADA
+  CANCELADA
+}
+
+enum FormaPagamento {
+  PIX
+  DINHEIRO
+  CARTAO
+  BOLETO
+  FIADO
+}
+
+model Usuario {
+  id          Int      @id @default(autoincrement())
+  nome        String
+  email       String   @unique
+  senhaHash   String
+  perfil      Perfil   @default(VENDEDOR)
+  ativo       Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  vendas      Venda[]
+}
+
+model Cliente {
+  id             Int      @id @default(autoincrement())
+  nome           String
+  documento      String?
+  telefone       String?
+  email          String?
+  endereco       String?
+  cidade         String?
+  limiteCredito  Decimal  @default(0) @db.Decimal(12, 2)
+  ativo          Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  vendas               Venda[]
+  bandeja              BandejaCliente?
+  movimentacoesBandeja MovimentacaoBandeja[]
+  contasReceber        ContaReceber[]
+}
+
+model Produto {
+  id            Int      @id @default(autoincrement())
+  nome          String
+  tipo          String?
+  unidade       String   @default("dúzia")
+  precoVenda    Decimal  @db.Decimal(12, 2)
+  precoCusto    Decimal? @db.Decimal(12, 2)
+  quantidade    Int      @default(0)
+  estoqueMinimo Int      @default(0)
+  ativo         Boolean  @default(true)
+  createdAt     DateTime @default(now())
+
+  lotes         Lote[]
+  movimentacoes MovimentacaoEstoque[]
+  itensVenda    ItemVenda[]
+}
+
+model Lote {
+  id         Int      @id @default(autoincrement())
+  produtoId  Int
+  produto    Produto  @relation(fields: [produtoId], references: [id], onDelete: Cascade)
+  quantidade Int
+  validade   DateTime
+  createdAt  DateTime @default(now())
+}
+
+model MovimentacaoEstoque {
+  id         Int                      @id @default(autoincrement())
+  produtoId  Int
+  produto    Produto                  @relation(fields: [produtoId], references: [id], onDelete: Cascade)
+  tipo       TipoMovimentacaoEstoque
+  quantidade Int
+  motivo     String?
+  createdAt  DateTime                 @default(now())
+}
+
+model BandejaCliente {
+  id          Int      @id @default(autoincrement())
+  clienteId   Int      @unique
+  cliente     Cliente  @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+  emprestadas Int      @default(0)
+  devolvidas  Int      @default(0)
+  updatedAt   DateTime @updatedAt
+}
+
+model MovimentacaoBandeja {
+  id         Int                      @id @default(autoincrement())
+  clienteId  Int
+  cliente    Cliente                  @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+  tipo       TipoMovimentacaoBandeja
+  quantidade Int
+  createdAt  DateTime                 @default(now())
+}
+
+model Venda {
+  id             Int             @id @default(autoincrement())
+  clienteId      Int
+  cliente        Cliente         @relation(fields: [clienteId], references: [id])
+  vendedorId     Int
+  vendedor       Usuario         @relation(fields: [vendedorId], references: [id])
+  status         StatusVenda     @default(ORCAMENTO)
+  formaPagamento FormaPagamento?
+  desconto       Decimal         @default(0) @db.Decimal(12, 2)
+  total          Decimal         @default(0) @db.Decimal(12, 2)
+  createdAt      DateTime        @default(now())
+  confirmadaEm   DateTime?
+
+  itens          ItemVenda[]
+  contaReceber   ContaReceber?
+}
+
+model ItemVenda {
+  id         Int     @id @default(autoincrement())
+  vendaId    Int
+  venda      Venda   @relation(fields: [vendaId], references: [id], onDelete: Cascade)
+  produtoId  Int
+  produto    Produto @relation(fields: [produtoId], references: [id])
+  quantidade Int
+  precoUnit  Decimal @db.Decimal(12, 2)
+}
+
+model ContaReceber {
+  id         Int       @id @default(autoincrement())
+  clienteId  Int
+  cliente    Cliente   @relation(fields: [clienteId], references: [id])
+  vendaId    Int?      @unique
+  venda      Venda?    @relation(fields: [vendaId], references: [id])
+  valor      Decimal   @db.Decimal(12, 2)
+  vencimento DateTime
+  pago       Boolean   @default(false)
+  pagoEm     DateTime?
+  createdAt  DateTime  @default(now())
+}
+
+model ContaPagar {
+  id          Int       @id @default(autoincrement())
+  descricao   String
+  fornecedor  String?
+  valor       Decimal   @db.Decimal(12, 2)
+  vencimento  DateTime
+  pago        Boolean   @default(false)
+  pagoEm      DateTime?
+  createdAt   DateTime  @default(now())
+}
