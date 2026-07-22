@@ -14,7 +14,8 @@ const dashboardRoutes = require('./modules/dashboard/dashboard.routes');
 
 const app = express();
 
-const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173')
+const defaultOrigins = 'http://localhost:5173,https://ovosbastos.selfmachine.com.br';
+const allowedOrigins = (process.env.CORS_ORIGIN || defaultOrigins)
   .split(',')
   .map((origin) => origin.trim());
 
