@@ -1,4 +1,6 @@
 const prisma = require('../../config/db');
+const { encontrarOuCriarClientePorNome } = require('../clientes/clientes.service');
+const { processarCheckout } = require('./vendas.service');
 
 const INCLUDE_PADRAO = {
   cliente: true,
@@ -65,6 +67,29 @@ async function criar(req, res, next) {
         itens: { create: itensComPreco },
       },
       include: INCLUDE_PADRAO,
+    });
+
+    res.status(201).json(venda);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function checkout(req, res, next) {
+  try {
+    const { nomeCliente, itens, formaPagamento, vencimento } = req.body;
+
+    if (!nomeCliente || !nomeCliente.trim()) {
+      return res.status(400).json({ error: 'Informe o nome do cliente' });
+    }
+
+    const cliente = await encontrarOuCriarClientePorNome(nomeCliente);
+    const venda = await processarCheckout({
+      clienteId: cliente.id,
+      vendedorId: req.usuario.id,
+      itens,
+      formaPagamento,
+      vencimento,
     });
 
     res.status(201).json(venda);
@@ -164,7 +189,7 @@ async function comprovante(req, res, next) {
       numero: venda.id,
       data: venda.confirmadaEm || venda.createdAt,
       cliente: venda.cliente.nome,
-      vendedor: venda.vendedor.nome,
+      vendedor: venda.vendedor?.nome || 'Loja Online',
       itens: venda.itens.map((i) => ({
         produto: i.produto.nome,
         quantidade: i.quantidade,
@@ -181,4 +206,4 @@ async function comprovante(req, res, next) {
   }
 }
 
-module.exports = { listar, obter, criar, confirmar, cancelar, comprovante };
+module.exports = { listar, obter, criar, checkout, confirmar, cancelar, comprovante };

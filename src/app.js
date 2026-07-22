@@ -11,6 +11,7 @@ const bandejasRoutes = require('./modules/bandejas/bandejas.routes');
 const vendasRoutes = require('./modules/vendas/vendas.routes');
 const financeiroRoutes = require('./modules/financeiro/financeiro.routes');
 const dashboardRoutes = require('./modules/dashboard/dashboard.routes');
+const lojaRoutes = require('./modules/loja/loja.routes');
 
 const app = express();
 
@@ -34,6 +35,7 @@ app.use(morgan('dev'));
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
+app.use('/api/loja', lojaRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/clientes', clientesRoutes);
 app.use('/api/produtos', produtosRoutes);

@@ -125,8 +125,8 @@ model Venda {
   id             Int             @id @default(autoincrement())
   clienteId      Int
   cliente        Cliente         @relation(fields: [clienteId], references: [id])
-  vendedorId     Int
-  vendedor       Usuario         @relation(fields: [vendedorId], references: [id])
+  vendedorId     Int?
+  vendedor       Usuario?        @relation(fields: [vendedorId], references: [id])
   status         StatusVenda     @default(ORCAMENTO)
   formaPagamento FormaPagamento?
   desconto       Decimal         @default(0) @db.Decimal(12, 2)
