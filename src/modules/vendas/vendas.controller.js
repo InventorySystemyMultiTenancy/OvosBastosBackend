@@ -10,7 +10,19 @@ const INCLUDE_PADRAO = {
 
 async function listar(req, res, next) {
   try {
-    const where = req.query.status ? { status: req.query.status } : {};
+    const { status, de, ate } = req.query;
+    const where = {};
+    if (status) where.status = status;
+    if (de || ate) {
+      where.confirmadaEm = {};
+      if (de) where.confirmadaEm.gte = new Date(de);
+      if (ate) {
+        const fim = new Date(ate);
+        fim.setHours(23, 59, 59, 999);
+        where.confirmadaEm.lte = fim;
+      }
+    }
+
     const vendas = await prisma.venda.findMany({
       where,
       include: INCLUDE_PADRAO,
