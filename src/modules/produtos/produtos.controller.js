@@ -1,7 +1,5 @@
-const fs = require('fs');
-const path = require('path');
 const prisma = require('../../config/db');
-const { PASTA_UPLOADS } = require('../../config/upload');
+const cloudinary = require('../../config/cloudinary');
 
 async function listar(req, res, next) {
   try {
@@ -73,13 +71,17 @@ async function enviarImagem(req, res, next) {
     const produtoAtual = await prisma.produto.findUnique({ where: { id } });
     if (!produtoAtual) return res.status(404).json({ error: 'Produto não encontrado' });
 
-    if (produtoAtual.imagemUrl) {
-      const arquivoAntigo = path.join(PASTA_UPLOADS, path.basename(produtoAtual.imagemUrl));
-      fs.unlink(arquivoAntigo, () => {});
-    }
+    // public_id fixo por produto: reenviar uma imagem para o mesmo produto
+    // sobrescreve o arquivo anterior no Cloudinary em vez de acumular lixo.
+    const resultado = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { folder: 'ovosbastos/produtos', public_id: `produto-${id}`, overwrite: true, resource_type: 'image' },
+        (err, result) => (err ? reject(err) : resolve(result))
+      );
+      stream.end(req.file.buffer);
+    });
 
-    const imagemUrl = `/uploads/produtos/${req.file.filename}`;
-    const produto = await prisma.produto.update({ where: { id }, data: { imagemUrl } });
+    const produto = await prisma.produto.update({ where: { id }, data: { imagemUrl: resultado.secure_url } });
     res.json(produto);
   } catch (err) {
     next(err);

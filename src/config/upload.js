@@ -1,17 +1,4 @@
-const fs = require('fs');
-const path = require('path');
 const multer = require('multer');
-
-const PASTA_UPLOADS = path.join(__dirname, '..', '..', 'public', 'uploads', 'produtos');
-fs.mkdirSync(PASTA_UPLOADS, { recursive: true });
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, PASTA_UPLOADS),
-  filename: (req, file, cb) => {
-    const extensao = path.extname(file.originalname).toLowerCase() || '.jpg';
-    cb(null, `produto-${req.params.id}-${Date.now()}${extensao}`);
-  },
-});
 
 function fileFilter(req, file, cb) {
   if (!file.mimetype.startsWith('image/')) {
@@ -20,10 +7,13 @@ function fileFilter(req, file, cb) {
   cb(null, true);
 }
 
+// Guarda o arquivo em memória (buffer) — nada é escrito em disco. O disco do
+// serviço na Render é efêmero (some a cada deploy/restart), então o upload
+// segue direto pro Cloudinary a partir do buffer.
 const uploadImagemProduto = multer({
-  storage,
+  storage: multer.memoryStorage(),
   fileFilter,
   limits: { fileSize: 5 * 1024 * 1024 },
 });
 
-module.exports = { uploadImagemProduto, PASTA_UPLOADS };
+module.exports = { uploadImagemProduto };
