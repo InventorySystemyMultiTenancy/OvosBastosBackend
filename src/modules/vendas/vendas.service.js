@@ -11,7 +11,7 @@ function calcularTotal(itensComPreco, desconto) {
   return Math.max(bruto - Number(desconto || 0), 0);
 }
 
-async function processarCheckout({ clienteId, vendedorId, itens, formaPagamento, vencimento, origemMotivo }) {
+async function processarCheckout({ clienteId, vendedorId, itens, formaPagamento, vencimento, desconto = 0, origemMotivo }) {
   if (!clienteId || !Array.isArray(itens) || itens.length === 0) {
     throw Object.assign(new Error('clienteId e ao menos um item são obrigatórios'), { status: 400 });
   }
@@ -38,7 +38,7 @@ async function processarCheckout({ clienteId, vendedorId, itens, formaPagamento,
     return { produtoId: produto.id, quantidade, precoUnit: produto.precoVenda, nome: produto.nome };
   });
 
-  const total = calcularTotal(itensComPreco, 0);
+  const total = calcularTotal(itensComPreco, desconto);
 
   if (formaPagamento === 'FIADO') {
     const cliente = await prisma.cliente.findUnique({ where: { id: clienteId } });
@@ -60,7 +60,7 @@ async function processarCheckout({ clienteId, vendedorId, itens, formaPagamento,
         vendedorId: vendedorId || null,
         status: 'CONFIRMADA',
         formaPagamento,
-        desconto: 0,
+        desconto,
         total,
         confirmadaEm: new Date(),
         itens: { create: itensComPreco.map(({ produtoId, quantidade, precoUnit }) => ({ produtoId, quantidade, precoUnit })) },

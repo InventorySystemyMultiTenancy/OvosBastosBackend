@@ -89,7 +89,7 @@ async function criar(req, res, next) {
 
 async function checkout(req, res, next) {
   try {
-    const { nomeCliente, itens, formaPagamento, vencimento } = req.body;
+    const { nomeCliente, itens, formaPagamento, vencimento, desconto } = req.body;
 
     if (!nomeCliente || !nomeCliente.trim()) {
       return res.status(400).json({ error: 'Informe o nome do cliente' });
@@ -102,6 +102,7 @@ async function checkout(req, res, next) {
       itens,
       formaPagamento,
       vencimento,
+      desconto: Number(desconto) || 0,
     });
 
     res.status(201).json(venda);
