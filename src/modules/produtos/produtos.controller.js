@@ -1,4 +1,7 @@
+const fs = require('fs');
+const path = require('path');
 const prisma = require('../../config/db');
+const { PASTA_UPLOADS } = require('../../config/upload');
 
 async function listar(req, res, next) {
   try {
@@ -62,6 +65,27 @@ async function atualizar(req, res, next) {
   }
 }
 
+async function enviarImagem(req, res, next) {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Envie um arquivo de imagem' });
+
+    const id = Number(req.params.id);
+    const produtoAtual = await prisma.produto.findUnique({ where: { id } });
+    if (!produtoAtual) return res.status(404).json({ error: 'Produto não encontrado' });
+
+    if (produtoAtual.imagemUrl) {
+      const arquivoAntigo = path.join(PASTA_UPLOADS, path.basename(produtoAtual.imagemUrl));
+      fs.unlink(arquivoAntigo, () => {});
+    }
+
+    const imagemUrl = `/uploads/produtos/${req.file.filename}`;
+    const produto = await prisma.produto.update({ where: { id }, data: { imagemUrl } });
+    res.json(produto);
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function remover(req, res, next) {
   try {
     await prisma.produto.update({ where: { id: Number(req.params.id) }, data: { ativo: false } });
@@ -71,4 +95,4 @@ async function remover(req, res, next) {
   }
 }
 
-module.exports = { listar, obter, criar, atualizar, remover };
+module.exports = { listar, obter, criar, atualizar, enviarImagem, remover };

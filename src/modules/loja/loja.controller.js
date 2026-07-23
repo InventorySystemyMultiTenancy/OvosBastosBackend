@@ -14,6 +14,7 @@ async function listarCatalogo(req, res, next) {
         precoVenda: true,
         quantidade: true,
         estoqueMinimo: true,
+        imagemUrl: true,
       },
       orderBy: { nome: 'asc' },
     });

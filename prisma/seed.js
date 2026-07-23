@@ -40,15 +40,17 @@ async function main() {
   }
 
   const produtosSeed = [
-    { nome: 'Ovo Branco Grande (dúzia)', tipo: 'branco', precoVenda: 9.9, precoCusto: 6.5, quantidade: 500, estoqueMinimo: 100 },
-    { nome: 'Ovo Vermelho Grande (dúzia)', tipo: 'vermelho', precoVenda: 10.9, precoCusto: 7.2, quantidade: 400, estoqueMinimo: 100 },
-    { nome: 'Ovo Caipira (dúzia)', tipo: 'caipira', precoVenda: 14.9, precoCusto: 10.0, quantidade: 150, estoqueMinimo: 50 },
+    { nome: 'Ovo Branco Grande (dúzia)', tipo: 'branco', precoVenda: 9.9, precoCusto: 6.5, quantidade: 500, estoqueMinimo: 100, imagemUrl: '/uploads/produtos/ovo-branco.jpg' },
+    { nome: 'Ovo Vermelho Grande (dúzia)', tipo: 'vermelho', precoVenda: 10.9, precoCusto: 7.2, quantidade: 400, estoqueMinimo: 100, imagemUrl: '/uploads/produtos/ovo-vermelho.png' },
+    { nome: 'Ovo Caipira (dúzia)', tipo: 'caipira', precoVenda: 14.9, precoCusto: 10.0, quantidade: 150, estoqueMinimo: 50, imagemUrl: '/uploads/produtos/ovo-caipira.jpg' },
   ];
 
   for (const p of produtosSeed) {
     const existente = await prisma.produto.findFirst({ where: { nome: p.nome } });
     if (!existente) {
       await prisma.produto.create({ data: p });
+    } else if (!existente.imagemUrl) {
+      await prisma.produto.update({ where: { id: existente.id }, data: { imagemUrl: p.imagemUrl } });
     }
   }
 
