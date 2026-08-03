@@ -10,6 +10,7 @@ const produtosRoutes = require('./modules/produtos/produtos.routes');
 const estoqueRoutes = require('./modules/estoque/estoque.routes');
 const bandejasRoutes = require('./modules/bandejas/bandejas.routes');
 const vendasRoutes = require('./modules/vendas/vendas.routes');
+const caixasRoutes = require('./modules/caixas/caixas.routes');
 const financeiroRoutes = require('./modules/financeiro/financeiro.routes');
 const dashboardRoutes = require('./modules/dashboard/dashboard.routes');
 const lojaRoutes = require('./modules/loja/loja.routes');
@@ -44,6 +45,7 @@ app.use('/api/produtos', produtosRoutes);
 app.use('/api/estoque', estoqueRoutes);
 app.use('/api/bandejas', bandejasRoutes);
 app.use('/api/vendas', vendasRoutes);
+app.use('/api/caixas', caixasRoutes);
 app.use('/api/financeiro', financeiroRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 

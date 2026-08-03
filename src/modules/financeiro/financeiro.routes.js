@@ -15,5 +15,6 @@ router.post('/contas-pagar', ctrl.criarContaPagar);
 router.put('/contas-pagar/:id/pagar', ctrl.pagarContaPagar);
 
 router.get('/fluxo-caixa', ctrl.fluxoCaixa);
+router.get('/resumo-caixas', ctrl.resumoPorCaixa);
 
 module.exports = router;

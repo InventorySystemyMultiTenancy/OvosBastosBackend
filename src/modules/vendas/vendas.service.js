@@ -3,6 +3,7 @@ const prisma = require('../../config/db');
 const INCLUDE_PADRAO = {
   cliente: true,
   vendedor: { select: { id: true, nome: true } },
+  caixa: true,
   itens: { include: { produto: true } },
 };
 
@@ -11,12 +12,19 @@ function calcularTotal(itensComPreco, desconto) {
   return Math.max(bruto - Number(desconto || 0), 0);
 }
 
-async function processarCheckout({ clienteId, vendedorId, itens, formaPagamento, vencimento, desconto = 0, origemMotivo }) {
+async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaPagamento, vencimento, desconto = 0, origemMotivo }) {
   if (!clienteId || !Array.isArray(itens) || itens.length === 0) {
     throw Object.assign(new Error('clienteId e ao menos um item são obrigatórios'), { status: 400 });
   }
   if (!formaPagamento) {
     throw Object.assign(new Error('formaPagamento é obrigatória'), { status: 400 });
+  }
+
+  if (caixaId) {
+    const caixa = await prisma.caixa.findUnique({ where: { id: Number(caixaId) } });
+    if (!caixa || !caixa.ativo) {
+      throw Object.assign(new Error('Caixa/unidade inválido'), { status: 400 });
+    }
   }
 
   const produtos = await prisma.produto.findMany({
@@ -58,6 +66,7 @@ async function processarCheckout({ clienteId, vendedorId, itens, formaPagamento,
       data: {
         clienteId,
         vendedorId: vendedorId || null,
+        caixaId: caixaId ? Number(caixaId) : null,
         status: 'CONFIRMADA',
         formaPagamento,
         desconto,
@@ -84,6 +93,7 @@ async function processarCheckout({ clienteId, vendedorId, itens, formaPagamento,
         data: {
           clienteId,
           vendaId: novaVenda.id,
+          caixaId: caixaId ? Number(caixaId) : null,
           valor: total,
           vencimento: vencimento ? new Date(vencimento) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
         },

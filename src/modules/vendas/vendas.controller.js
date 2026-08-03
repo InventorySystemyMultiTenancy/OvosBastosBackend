@@ -5,14 +5,16 @@ const { processarCheckout } = require('./vendas.service');
 const INCLUDE_PADRAO = {
   cliente: true,
   vendedor: { select: { id: true, nome: true } },
+  caixa: true,
   itens: { include: { produto: true } },
 };
 
 async function listar(req, res, next) {
   try {
-    const { status, de, ate } = req.query;
+    const { status, de, ate, caixaId } = req.query;
     const where = {};
     if (status) where.status = status;
+    if (caixaId) where.caixaId = Number(caixaId);
     if (de || ate) {
       where.confirmadaEm = {};
       if (de) where.confirmadaEm.gte = new Date(de);
@@ -54,7 +56,7 @@ function calcularTotal(itensComPreco, desconto) {
 
 async function criar(req, res, next) {
   try {
-    const { clienteId, itens, desconto } = req.body;
+    const { clienteId, itens, desconto, caixaId } = req.body;
     if (!clienteId || !Array.isArray(itens) || itens.length === 0) {
       return res.status(400).json({ error: 'clienteId e ao menos um item são obrigatórios' });
     }
@@ -74,6 +76,7 @@ async function criar(req, res, next) {
       data: {
         clienteId: Number(clienteId),
         vendedorId: req.usuario.id,
+        caixaId: caixaId ? Number(caixaId) : null,
         desconto: desconto || 0,
         total,
         itens: { create: itensComPreco },
@@ -89,7 +92,7 @@ async function criar(req, res, next) {
 
 async function checkout(req, res, next) {
   try {
-    const { nomeCliente, itens, formaPagamento, vencimento, desconto } = req.body;
+    const { nomeCliente, itens, formaPagamento, vencimento, desconto, caixaId } = req.body;
 
     if (!nomeCliente || !nomeCliente.trim()) {
       return res.status(400).json({ error: 'Informe o nome do cliente' });
@@ -99,6 +102,7 @@ async function checkout(req, res, next) {
     const venda = await processarCheckout({
       clienteId: cliente.id,
       vendedorId: req.usuario.id,
+      caixaId,
       itens,
       formaPagamento,
       vencimento,
@@ -161,6 +165,7 @@ async function confirmar(req, res, next) {
           data: {
             clienteId: venda.clienteId,
             vendaId: id,
+            caixaId: venda.caixaId,
             valor: venda.total,
             vencimento: vencimento ? new Date(vencimento) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
           },

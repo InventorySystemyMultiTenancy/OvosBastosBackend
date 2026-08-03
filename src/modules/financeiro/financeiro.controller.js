@@ -3,9 +3,10 @@ const prisma = require('../../config/db');
 async function listarContasReceber(req, res, next) {
   try {
     const where = req.query.pago !== undefined ? { pago: req.query.pago === 'true' } : {};
+    if (req.query.caixaId) where.caixaId = Number(req.query.caixaId);
     const contas = await prisma.contaReceber.findMany({
       where,
-      include: { cliente: true },
+      include: { cliente: true, caixa: true },
       orderBy: { vencimento: 'asc' },
     });
     res.json(contas);
@@ -16,12 +17,17 @@ async function listarContasReceber(req, res, next) {
 
 async function criarContaReceber(req, res, next) {
   try {
-    const { clienteId, valor, vencimento } = req.body;
+    const { clienteId, valor, vencimento, caixaId } = req.body;
     if (!clienteId || !valor || !vencimento) {
       return res.status(400).json({ error: 'clienteId, valor e vencimento são obrigatórios' });
     }
     const conta = await prisma.contaReceber.create({
-      data: { clienteId: Number(clienteId), valor, vencimento: new Date(vencimento) },
+      data: {
+        clienteId: Number(clienteId),
+        valor,
+        vencimento: new Date(vencimento),
+        caixaId: caixaId ? Number(caixaId) : null,
+      },
     });
     res.status(201).json(conta);
   } catch (err) {
@@ -44,7 +50,8 @@ async function pagarContaReceber(req, res, next) {
 async function listarContasPagar(req, res, next) {
   try {
     const where = req.query.pago !== undefined ? { pago: req.query.pago === 'true' } : {};
-    const contas = await prisma.contaPagar.findMany({ where, orderBy: { vencimento: 'asc' } });
+    if (req.query.caixaId) where.caixaId = Number(req.query.caixaId);
+    const contas = await prisma.contaPagar.findMany({ where, include: { caixa: true }, orderBy: { vencimento: 'asc' } });
     res.json(contas);
   } catch (err) {
     next(err);
@@ -53,12 +60,12 @@ async function listarContasPagar(req, res, next) {
 
 async function criarContaPagar(req, res, next) {
   try {
-    const { descricao, fornecedor, valor, vencimento } = req.body;
+    const { descricao, fornecedor, valor, vencimento, caixaId } = req.body;
     if (!descricao || !valor || !vencimento) {
       return res.status(400).json({ error: 'descricao, valor e vencimento são obrigatórios' });
     }
     const conta = await prisma.contaPagar.create({
-      data: { descricao, fornecedor, valor, vencimento: new Date(vencimento) },
+      data: { descricao, fornecedor, valor, vencimento: new Date(vencimento), caixaId: caixaId ? Number(caixaId) : null },
     });
     res.status(201).json(conta);
   } catch (err) {
@@ -125,6 +132,67 @@ async function fluxoCaixa(req, res, next) {
   }
 }
 
+async function resumoPorCaixa(req, res, next) {
+  try {
+    const { de, ate } = req.query;
+    const periodoVenda = {};
+    const periodoPagar = {};
+    if (de || ate) {
+      periodoVenda.confirmadaEm = {};
+      periodoPagar.pagoEm = {};
+      if (de) {
+        periodoVenda.confirmadaEm.gte = new Date(de);
+        periodoPagar.pagoEm.gte = new Date(de);
+      }
+      if (ate) {
+        const fim = new Date(ate);
+        fim.setHours(23, 59, 59, 999);
+        periodoVenda.confirmadaEm.lte = fim;
+        periodoPagar.pagoEm.lte = fim;
+      }
+    }
+
+    const [caixas, receitasPorCaixa, despesasPorCaixa] = await Promise.all([
+      prisma.caixa.findMany({ orderBy: { id: 'asc' } }),
+      prisma.venda.groupBy({
+        by: ['caixaId'],
+        where: { status: 'CONFIRMADA', ...periodoVenda },
+        _sum: { total: true },
+      }),
+      prisma.contaPagar.groupBy({
+        by: ['caixaId'],
+        where: { pago: true, ...periodoPagar },
+        _sum: { valor: true },
+      }),
+    ]);
+
+    const receitaMap = new Map(receitasPorCaixa.map((r) => [r.caixaId, Number(r._sum.total || 0)]));
+    const despesaMap = new Map(despesasPorCaixa.map((d) => [d.caixaId, Number(d._sum.valor || 0)]));
+
+    const linhas = caixas.map((c) => {
+      const receitas = receitaMap.get(c.id) || 0;
+      const despesas = despesaMap.get(c.id) || 0;
+      return { id: c.id, nome: c.nome, unidade: c.unidade, ativo: c.ativo, receitas, despesas, saldo: receitas - despesas };
+    });
+
+    const semUnidade = {
+      receitas: receitaMap.get(null) || 0,
+      despesas: despesaMap.get(null) || 0,
+    };
+    semUnidade.saldo = semUnidade.receitas - semUnidade.despesas;
+
+    const total = linhas.reduce(
+      (acc, l) => ({ receitas: acc.receitas + l.receitas, despesas: acc.despesas + l.despesas }),
+      { receitas: semUnidade.receitas, despesas: semUnidade.despesas }
+    );
+    total.saldo = total.receitas - total.despesas;
+
+    res.json({ caixas: linhas, semUnidade, total });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   listarContasReceber,
   criarContaReceber,
@@ -133,4 +201,5 @@ module.exports = {
   criarContaPagar,
   pagarContaPagar,
   fluxoCaixa,
+  resumoPorCaixa,
 };
