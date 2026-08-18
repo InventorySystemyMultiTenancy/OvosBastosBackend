@@ -21,11 +21,18 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
     throw Object.assign(new Error('formaPagamento é obrigatória'), { status: 400 });
   }
 
+  // "MAQUININHA" é um sinalizador do checkout, não um valor válido do enum FormaPagamento:
+  // a venda nasce como ORÇAMENTO (sem baixar estoque) e só é confirmada — com formaPagamento
+  // "CARTAO" — quando o Mercado Pago aprova o pagamento (ver mercadopago.service.aplicarStatusIntent).
+  const viaMaquininha = formaPagamento === 'MAQUININHA';
+
   if (caixaId) {
     const caixa = await prisma.caixa.findUnique({ where: { id: Number(caixaId) } });
     if (!caixa || !caixa.ativo) {
       throw Object.assign(new Error('Caixa/unidade inválido'), { status: 400 });
     }
+  } else if (viaMaquininha) {
+    throw Object.assign(new Error('Selecione um caixa para cobrar na maquininha'), { status: 400 });
   }
 
   const produtos = await prisma.produto.findMany({
@@ -68,25 +75,27 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
         clienteId,
         vendedorId: vendedorId || null,
         caixaId: caixaId ? Number(caixaId) : null,
-        status: 'CONFIRMADA',
-        formaPagamento,
+        status: viaMaquininha ? 'ORCAMENTO' : 'CONFIRMADA',
+        formaPagamento: viaMaquininha ? null : formaPagamento,
         desconto,
         total,
-        confirmadaEm: new Date(),
+        confirmadaEm: viaMaquininha ? null : new Date(),
         itens: { create: itensComPreco.map(({ produtoId, quantidade, precoUnit }) => ({ produtoId, quantidade, precoUnit })) },
       },
     });
 
-    for (const item of itensComPreco) {
-      await tx.produto.update({ where: { id: item.produtoId }, data: { quantidade: { decrement: item.quantidade } } });
-      await tx.movimentacaoEstoque.create({
-        data: {
-          produtoId: item.produtoId,
-          tipo: 'SAIDA',
-          quantidade: item.quantidade,
-          motivo: origemMotivo ? `${origemMotivo} #${novaVenda.id}` : `Venda #${novaVenda.id}`,
-        },
-      });
+    if (!viaMaquininha) {
+      for (const item of itensComPreco) {
+        await tx.produto.update({ where: { id: item.produtoId }, data: { quantidade: { decrement: item.quantidade } } });
+        await tx.movimentacaoEstoque.create({
+          data: {
+            produtoId: item.produtoId,
+            tipo: 'SAIDA',
+            quantidade: item.quantidade,
+            motivo: origemMotivo ? `${origemMotivo} #${novaVenda.id}` : `Venda #${novaVenda.id}`,
+          },
+        });
+      }
     }
 
     if (formaPagamento === 'FIADO') {
