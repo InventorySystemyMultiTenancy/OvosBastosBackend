@@ -3,8 +3,9 @@ const prisma = require('../../config/db');
 const INCLUDE_PADRAO = {
   cliente: true,
   vendedor: { select: { id: true, nome: true } },
-  caixa: true,
+  caixa: { select: { id: true, nome: true, unidade: true, ativo: true } },
   itens: { include: { produto: true } },
+  pagamentoPointMP: true,
 };
 
 function calcularTotal(itensComPreco, desconto) {
@@ -106,4 +107,69 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
   return prisma.venda.findUnique({ where: { id: venda.id }, include: INCLUDE_PADRAO });
 }
 
-module.exports = { INCLUDE_PADRAO, calcularTotal, processarCheckout };
+async function confirmarVenda(vendaId, { formaPagamento, vencimento }) {
+  const id = Number(vendaId);
+  if (!formaPagamento) {
+    throw Object.assign(new Error('formaPagamento é obrigatória'), { status: 400 });
+  }
+
+  const venda = await prisma.venda.findUnique({ where: { id }, include: { itens: true, cliente: true } });
+  if (!venda) {
+    throw Object.assign(new Error('Venda não encontrada'), { status: 404 });
+  }
+  if (venda.status !== 'ORCAMENTO') {
+    throw Object.assign(new Error('Somente orçamentos podem ser confirmados'), { status: 400 });
+  }
+
+  for (const item of venda.itens) {
+    const produto = await prisma.produto.findUnique({ where: { id: item.produtoId } });
+    if (produto.quantidade < item.quantidade) {
+      throw Object.assign(new Error(`Estoque insuficiente para o produto "${produto.nome}"`), { status: 400 });
+    }
+  }
+
+  if (formaPagamento === 'FIADO') {
+    const devedorAtual = await prisma.contaReceber.aggregate({
+      where: { clienteId: venda.clienteId, pago: false },
+      _sum: { valor: true },
+    });
+    const saldoDevedor = Number(devedorAtual._sum.valor || 0);
+    const limite = Number(venda.cliente.limiteCredito);
+    if (saldoDevedor + Number(venda.total) > limite) {
+      throw Object.assign(new Error('Limite de crédito do cliente excedido'), { status: 400 });
+    }
+  }
+
+  const operacoes = [
+    prisma.venda.update({
+      where: { id },
+      data: { status: 'CONFIRMADA', formaPagamento, confirmadaEm: new Date() },
+    }),
+    ...venda.itens.flatMap((item) => [
+      prisma.produto.update({ where: { id: item.produtoId }, data: { quantidade: { decrement: item.quantidade } } }),
+      prisma.movimentacaoEstoque.create({
+        data: { produtoId: item.produtoId, tipo: 'SAIDA', quantidade: item.quantidade, motivo: `Venda #${id}` },
+      }),
+    ]),
+  ];
+
+  if (formaPagamento === 'FIADO') {
+    operacoes.push(
+      prisma.contaReceber.create({
+        data: {
+          clienteId: venda.clienteId,
+          vendaId: id,
+          caixaId: venda.caixaId,
+          valor: venda.total,
+          vencimento: vencimento ? new Date(vencimento) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        },
+      })
+    );
+  }
+
+  await prisma.$transaction(operacoes);
+
+  return prisma.venda.findUnique({ where: { id }, include: INCLUDE_PADRAO });
+}
+
+module.exports = { INCLUDE_PADRAO, calcularTotal, processarCheckout, confirmarVenda };

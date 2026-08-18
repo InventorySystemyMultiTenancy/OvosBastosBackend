@@ -13,4 +13,8 @@ router.put('/:id/confirmar', ctrl.confirmar);
 router.put('/:id/cancelar', ctrl.cancelar);
 router.get('/:id/comprovante', ctrl.comprovante);
 
+router.post('/:id/pagamento-maquininha', ctrl.pagarMaquininha);
+router.delete('/:id/pagamento-maquininha', ctrl.cancelarPagamentoMaquininha);
+router.get('/:id/pagamento-maquininha', ctrl.statusPagamentoMaquininha);
+
 module.exports = router;

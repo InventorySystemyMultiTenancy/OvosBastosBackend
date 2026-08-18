@@ -37,29 +37,37 @@ enum FormaPagamento {
   FIADO
 }
 
-model Usuario {
-  id          Int      @id @default(autoincrement())
-  nome        String
-  email       String   @unique
-  senhaHash   String
-  perfil      Perfil   @default(VENDEDOR)
-  ativo       Boolean  @default(true)
-  createdAt   DateTime @default(now())
+enum StatusPagamentoPointMP {
+  PENDENTE
+  EM_PROCESSO
+  APROVADO
+  REJEITADO
+  CANCELADO
+}
 
-  vendas      Venda[]
+model Usuario {
+  id        Int      @id @default(autoincrement())
+  nome      String
+  email     String   @unique
+  senhaHash String
+  perfil    Perfil   @default(VENDEDOR)
+  ativo     Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  vendas Venda[]
 }
 
 model Cliente {
-  id             Int      @id @default(autoincrement())
-  nome           String
-  documento      String?
-  telefone       String?
-  email          String?
-  endereco       String?
-  cidade         String?
-  limiteCredito  Decimal  @default(0) @db.Decimal(12, 2)
-  ativo          Boolean  @default(true)
-  createdAt      DateTime @default(now())
+  id            Int      @id @default(autoincrement())
+  nome          String
+  documento     String?
+  telefone      String?
+  email         String?
+  endereco      String?
+  cidade        String?
+  limiteCredito Decimal  @default(0) @db.Decimal(12, 2)
+  ativo         Boolean  @default(true)
+  createdAt     DateTime @default(now())
 
   vendas               Venda[]
   bandeja              BandejaCliente?
@@ -95,13 +103,13 @@ model Lote {
 }
 
 model MovimentacaoEstoque {
-  id         Int                      @id @default(autoincrement())
+  id         Int                     @id @default(autoincrement())
   produtoId  Int
-  produto    Produto                  @relation(fields: [produtoId], references: [id], onDelete: Cascade)
+  produto    Produto                 @relation(fields: [produtoId], references: [id], onDelete: Cascade)
   tipo       TipoMovimentacaoEstoque
   quantidade Int
   motivo     String?
-  createdAt  DateTime                 @default(now())
+  createdAt  DateTime                @default(now())
 }
 
 model BandejaCliente {
@@ -114,12 +122,12 @@ model BandejaCliente {
 }
 
 model MovimentacaoBandeja {
-  id         Int                      @id @default(autoincrement())
+  id         Int                     @id @default(autoincrement())
   clienteId  Int
-  cliente    Cliente                  @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+  cliente    Cliente                 @relation(fields: [clienteId], references: [id], onDelete: Cascade)
   tipo       TipoMovimentacaoBandeja
   quantidade Int
-  createdAt  DateTime                 @default(now())
+  createdAt  DateTime                @default(now())
 }
 
 model Venda {
@@ -137,8 +145,9 @@ model Venda {
   createdAt      DateTime        @default(now())
   confirmadaEm   DateTime?
 
-  itens          ItemVenda[]
-  contaReceber   ContaReceber?
+  itens            ItemVenda[]
+  contaReceber     ContaReceber?
+  pagamentoPointMP PagamentoPointMP?
 }
 
 model Caixa {
@@ -148,9 +157,31 @@ model Caixa {
   ativo     Boolean  @default(true)
   createdAt DateTime @default(now())
 
-  vendas        Venda[]
-  contasPagar   ContaPagar[]
-  contasReceber ContaReceber[]
+  // Integração Mercado Pago Point: cada caixa tem sua própria conta e maquininha.
+  mpAccessTokenEnc String? // access token da conta MP, criptografado em repouso (ver src/utils/crypto.js)
+  mpUserId         String? // user_id da conta MP dona do token
+  mpNicknameConta  String? // nickname/email da conta MP, apenas para exibição
+  mpDeviceId       String? // device_id da maquininha (Point Smart) associada a este caixa
+
+  vendas            Venda[]
+  contasPagar       ContaPagar[]
+  contasReceber     ContaReceber[]
+  pagamentosPointMP PagamentoPointMP[]
+}
+
+model PagamentoPointMP {
+  id              Int                    @id @default(autoincrement())
+  vendaId         Int                    @unique
+  venda           Venda                  @relation(fields: [vendaId], references: [id], onDelete: Cascade)
+  caixaId         Int
+  caixa           Caixa                  @relation(fields: [caixaId], references: [id])
+  deviceId        String
+  paymentIntentId String                 @unique
+  status          StatusPagamentoPointMP @default(PENDENTE)
+  valor           Decimal                @db.Decimal(12, 2)
+  detalhes        Json?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
 }
 
 model ItemVenda {
@@ -179,14 +210,14 @@ model ContaReceber {
 }
 
 model ContaPagar {
-  id          Int       @id @default(autoincrement())
-  descricao   String
-  fornecedor  String?
-  caixaId     Int?
-  caixa       Caixa?    @relation(fields: [caixaId], references: [id])
-  valor       Decimal   @db.Decimal(12, 2)
-  vencimento  DateTime
-  pago        Boolean   @default(false)
-  pagoEm      DateTime?
-  createdAt   DateTime  @default(now())
+  id         Int       @id @default(autoincrement())
+  descricao  String
+  fornecedor String?
+  caixaId    Int?
+  caixa      Caixa?    @relation(fields: [caixaId], references: [id])
+  valor      Decimal   @db.Decimal(12, 2)
+  vencimento DateTime
+  pago       Boolean   @default(false)
+  pagoEm     DateTime?
+  createdAt  DateTime  @default(now())
 }

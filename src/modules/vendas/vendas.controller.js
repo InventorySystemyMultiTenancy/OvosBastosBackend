@@ -1,12 +1,14 @@
 const prisma = require('../../config/db');
 const { encontrarOuCriarClientePorNome } = require('../clientes/clientes.service');
-const { processarCheckout } = require('./vendas.service');
+const { processarCheckout, confirmarVenda } = require('./vendas.service');
+const mpService = require('../mercadopago/mercadopago.service');
 
 const INCLUDE_PADRAO = {
   cliente: true,
   vendedor: { select: { id: true, nome: true } },
-  caixa: true,
+  caixa: { select: { id: true, nome: true, unidade: true, ativo: true } },
   itens: { include: { produto: true } },
+  pagamentoPointMP: true,
 };
 
 async function listar(req, res, next) {
@@ -117,66 +119,35 @@ async function checkout(req, res, next) {
 
 async function confirmar(req, res, next) {
   try {
-    const id = Number(req.params.id);
-    const { formaPagamento, vencimento } = req.body;
-    if (!formaPagamento) return res.status(400).json({ error: 'formaPagamento é obrigatória' });
+    const venda = await confirmarVenda(req.params.id, req.body);
+    res.json(venda);
+  } catch (err) {
+    next(err);
+  }
+}
 
-    const venda = await prisma.venda.findUnique({ where: { id }, include: { itens: true, cliente: true } });
-    if (!venda) return res.status(404).json({ error: 'Venda não encontrada' });
-    if (venda.status !== 'ORCAMENTO') {
-      return res.status(400).json({ error: 'Somente orçamentos podem ser confirmados' });
-    }
+async function pagarMaquininha(req, res, next) {
+  try {
+    const pagamento = await mpService.enviarCobranca(req.params.id);
+    res.status(201).json(pagamento);
+  } catch (err) {
+    next(err);
+  }
+}
 
-    for (const item of venda.itens) {
-      const produto = await prisma.produto.findUnique({ where: { id: item.produtoId } });
-      if (produto.quantidade < item.quantidade) {
-        return res.status(400).json({ error: `Estoque insuficiente para o produto "${produto.nome}"` });
-      }
-    }
+async function cancelarPagamentoMaquininha(req, res, next) {
+  try {
+    const pagamento = await mpService.cancelarCobranca(req.params.id);
+    res.json(pagamento);
+  } catch (err) {
+    next(err);
+  }
+}
 
-    if (formaPagamento === 'FIADO') {
-      const devedorAtual = await prisma.contaReceber.aggregate({
-        where: { clienteId: venda.clienteId, pago: false },
-        _sum: { valor: true },
-      });
-      const saldoDevedor = Number(devedorAtual._sum.valor || 0);
-      const limite = Number(venda.cliente.limiteCredito);
-      if (saldoDevedor + Number(venda.total) > limite) {
-        return res.status(400).json({ error: 'Limite de crédito do cliente excedido' });
-      }
-    }
-
-    const operacoes = [
-      prisma.venda.update({
-        where: { id },
-        data: { status: 'CONFIRMADA', formaPagamento, confirmadaEm: new Date() },
-      }),
-      ...venda.itens.flatMap((item) => [
-        prisma.produto.update({ where: { id: item.produtoId }, data: { quantidade: { decrement: item.quantidade } } }),
-        prisma.movimentacaoEstoque.create({
-          data: { produtoId: item.produtoId, tipo: 'SAIDA', quantidade: item.quantidade, motivo: `Venda #${id}` },
-        }),
-      ]),
-    ];
-
-    if (formaPagamento === 'FIADO') {
-      operacoes.push(
-        prisma.contaReceber.create({
-          data: {
-            clienteId: venda.clienteId,
-            vendaId: id,
-            caixaId: venda.caixaId,
-            valor: venda.total,
-            vencimento: vencimento ? new Date(vencimento) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-          },
-        })
-      );
-    }
-
-    await prisma.$transaction(operacoes);
-
-    const vendaAtualizada = await prisma.venda.findUnique({ where: { id }, include: INCLUDE_PADRAO });
-    res.json(vendaAtualizada);
+async function statusPagamentoMaquininha(req, res, next) {
+  try {
+    const pagamento = await mpService.sincronizarStatus(req.params.id);
+    res.json(pagamento);
   } catch (err) {
     next(err);
   }
@@ -224,4 +195,15 @@ async function comprovante(req, res, next) {
   }
 }
 
-module.exports = { listar, obter, criar, checkout, confirmar, cancelar, comprovante };
+module.exports = {
+  listar,
+  obter,
+  criar,
+  checkout,
+  confirmar,
+  cancelar,
+  comprovante,
+  pagarMaquininha,
+  cancelarPagamentoMaquininha,
+  statusPagamentoMaquininha,
+};
