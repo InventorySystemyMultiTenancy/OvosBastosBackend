@@ -6,6 +6,7 @@ const router = Router();
 
 router.use(authenticate);
 router.get('/', ctrl.listar);
+router.get('/revendas', ctrl.revendas);
 router.get('/:clienteId/historico', ctrl.historico);
 router.post('/:clienteId/emprestimo', ctrl.emprestimo);
 router.post('/:clienteId/devolucao', ctrl.devolucao);

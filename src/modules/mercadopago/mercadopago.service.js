@@ -113,8 +113,11 @@ async function enviarCobranca(vendaId) {
 
   const { accessToken, deviceId } = credenciaisAtivas(venda.caixa);
 
+  // Pagamento dividido: só o que sobra depois do dinheiro já recebido vai pra maquininha.
+  const valorCobranca = Number(venda.total) - Number(venda.valorDinheiro || 0);
+
   const intent = await mpClient.criarPaymentIntent(accessToken, deviceId, {
-    amount: Math.round(Number(venda.total) * 100),
+    amount: Math.round(valorCobranca * 100),
     externalReference: `venda-${venda.id}`,
     description: `Venda #${venda.id}`,
     notificationUrl: urlWebhook(venda.caixaId),
@@ -128,14 +131,14 @@ async function enviarCobranca(vendaId) {
       deviceId,
       paymentIntentId: intent.id,
       status: 'PENDENTE',
-      valor: venda.total,
+      valor: valorCobranca,
       detalhes: intent,
     },
     update: {
       deviceId,
       paymentIntentId: intent.id,
       status: 'PENDENTE',
-      valor: venda.total,
+      valor: valorCobranca,
       detalhes: intent,
     },
   });

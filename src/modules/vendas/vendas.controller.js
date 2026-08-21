@@ -94,7 +94,7 @@ async function criar(req, res, next) {
 
 async function checkout(req, res, next) {
   try {
-    const { nomeCliente, itens, formaPagamento, vencimento, desconto, caixaId } = req.body;
+    const { nomeCliente, itens, formaPagamento, vencimento, desconto, caixaId, valorDinheiro } = req.body;
 
     if (!nomeCliente || !nomeCliente.trim()) {
       return res.status(400).json({ error: 'Informe o nome do cliente' });
@@ -109,6 +109,7 @@ async function checkout(req, res, next) {
       formaPagamento,
       vencimento,
       desconto: Number(desconto) || 0,
+      valorDinheiro,
     });
 
     res.status(201).json(venda);
@@ -188,6 +189,7 @@ async function comprovante(req, res, next) {
       desconto: venda.desconto,
       total: venda.total,
       formaPagamento: venda.formaPagamento,
+      valorDinheiro: venda.valorDinheiro,
       status: venda.status,
     });
   } catch (err) {

@@ -1,5 +1,43 @@
 const prisma = require('../../config/db');
 
+const FORMAS_PAGAMENTO = ['PIX', 'DINHEIRO', 'CARTAO', 'BOLETO', 'FIADO'];
+
+async function vendasHojePorForma(req, res, next) {
+  try {
+    const inicioHoje = new Date();
+    inicioHoje.setHours(0, 0, 0, 0);
+
+    const vendasHoje = await prisma.venda.findMany({
+      where: { status: 'CONFIRMADA', confirmadaEm: { gte: inicioHoje } },
+      select: { total: true, formaPagamento: true, valorDinheiro: true },
+    });
+
+    const totais = Object.fromEntries(FORMAS_PAGAMENTO.map((forma) => [forma, 0]));
+    vendasHoje.forEach((v) => {
+      const total = Number(v.total);
+      const dinheiro = Number(v.valorDinheiro || 0);
+      // Venda com pagamento dividido: a parte em dinheiro conta pra DINHEIRO, o resto
+      // (que foi cobrado na maquininha) conta pra forma de pagamento real da venda (CARTAO).
+      if (dinheiro > 0 && v.formaPagamento) {
+        totais.DINHEIRO += dinheiro;
+        totais[v.formaPagamento] += total - dinheiro;
+      } else if (v.formaPagamento) {
+        totais[v.formaPagamento] += total;
+      }
+    });
+
+    const totalGeral = Object.values(totais).reduce((soma, valor) => soma + valor, 0);
+
+    res.json({
+      totalGeral,
+      quantidadeVendas: vendasHoje.length,
+      porFormaPagamento: FORMAS_PAGAMENTO.map((forma) => ({ forma, valor: totais[forma] })),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function listarContasReceber(req, res, next) {
   try {
     const where = req.query.pago !== undefined ? { pago: req.query.pago === 'true' } : {};
@@ -194,6 +232,7 @@ async function resumoPorCaixa(req, res, next) {
 }
 
 module.exports = {
+  vendasHojePorForma,
   listarContasReceber,
   criarContaReceber,
   pagarContaReceber,

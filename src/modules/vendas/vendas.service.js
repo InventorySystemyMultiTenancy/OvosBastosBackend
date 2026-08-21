@@ -13,7 +13,7 @@ function calcularTotal(itensComPreco, desconto) {
   return Math.max(bruto - Number(desconto || 0), 0);
 }
 
-async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaPagamento, vencimento, desconto = 0, origemMotivo }) {
+async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaPagamento, vencimento, desconto = 0, valorDinheiro, origemMotivo }) {
   if (!clienteId || !Array.isArray(itens) || itens.length === 0) {
     throw Object.assign(new Error('clienteId e ao menos um item são obrigatórios'), { status: 400 });
   }
@@ -25,6 +25,18 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
   // a venda nasce como ORÇAMENTO (sem baixar estoque) e só é confirmada — com formaPagamento
   // "CARTAO" — quando o Mercado Pago aprova o pagamento (ver mercadopago.service.aplicarStatusIntent).
   const viaMaquininha = formaPagamento === 'MAQUININHA';
+
+  // Pagamento dividido: uma parte sai em dinheiro na hora, o restante vai pra maquininha.
+  // Só faz sentido junto com MAQUININHA — o valor em dinheiro puro já é a forma "DINHEIRO".
+  const valorDinheiroNum = valorDinheiro !== undefined && valorDinheiro !== null ? Number(valorDinheiro) : null;
+  if (valorDinheiroNum !== null) {
+    if (!viaMaquininha) {
+      throw Object.assign(new Error('valorDinheiro só é aceito com pagamento na maquininha'), { status: 400 });
+    }
+    if (valorDinheiroNum <= 0) {
+      throw Object.assign(new Error('valorDinheiro deve ser maior que zero'), { status: 400 });
+    }
+  }
 
   if (caixaId) {
     const caixa = await prisma.caixa.findUnique({ where: { id: Number(caixaId) } });
@@ -69,6 +81,10 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
 
   const total = calcularTotal(itensComPreco, desconto);
 
+  if (valorDinheiroNum !== null && valorDinheiroNum >= total) {
+    throw Object.assign(new Error('valorDinheiro deve ser menor que o total (o restante vai pra maquininha)'), { status: 400 });
+  }
+
   if (formaPagamento === 'FIADO') {
     const cliente = await prisma.cliente.findUnique({ where: { id: clienteId } });
     const devedorAtual = await prisma.contaReceber.aggregate({
@@ -90,6 +106,7 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
         caixaId: caixaId ? Number(caixaId) : null,
         status: viaMaquininha ? 'ORCAMENTO' : 'CONFIRMADA',
         formaPagamento: viaMaquininha ? null : formaPagamento,
+        valorDinheiro: valorDinheiroNum,
         desconto,
         total,
         confirmadaEm: viaMaquininha ? null : new Date(),

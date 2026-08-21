@@ -6,6 +6,8 @@ const router = Router();
 
 router.use(authenticate, requireRole('ADMIN'));
 
+router.get('/vendas-hoje-por-forma', ctrl.vendasHojePorForma);
+
 router.get('/contas-receber', ctrl.listarContasReceber);
 router.post('/contas-receber', ctrl.criarContaReceber);
 router.put('/contas-receber/:id/pagar', ctrl.pagarContaReceber);

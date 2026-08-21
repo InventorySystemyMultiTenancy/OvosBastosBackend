@@ -192,6 +192,9 @@ model MovimentacaoBandeja {
   cliente    Cliente                 @relation(fields: [clienteId], references: [id], onDelete: Cascade)
   tipo       TipoMovimentacaoBandeja
   quantidade Int
+  // Preenchido só em DEVOLUCAO quando é uma revenda: quanto o cliente cobrou pelas bandejas
+  // devolvidas. Vira uma ContaPagar (despesa já paga) pra entrar no lucro líquido.
+  valor      Decimal?                @db.Decimal(12, 2)
   createdAt  DateTime                @default(now())
 }
 
@@ -205,6 +208,9 @@ model Venda {
   caixa          Caixa?          @relation(fields: [caixaId], references: [id])
   status         StatusVenda     @default(ORCAMENTO)
   formaPagamento FormaPagamento?
+  // Preenchido só quando o pagamento foi dividido entre dinheiro e maquininha: quanto saiu
+  // em dinheiro — o restante (total - valorDinheiro) é o que vai pra maquininha (CARTAO).
+  valorDinheiro  Decimal?        @db.Decimal(12, 2)
   desconto       Decimal         @default(0) @db.Decimal(12, 2)
   total          Decimal         @default(0) @db.Decimal(12, 2)
   createdAt      DateTime        @default(now())
