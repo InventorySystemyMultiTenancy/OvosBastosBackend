@@ -339,3 +339,15 @@ model ContaPagar {
   origemRecorrente   ContaPagar?  @relation("RecorrenciaContaPagar", fields: [origemRecorrenteId], references: [id])
   ocorrencias        ContaPagar[] @relation("RecorrenciaContaPagar")
 }
+
+// Análise de reposição gerada por IA (ver src/modules/analiseReposicao) — uma linha por dia,
+// em cache: a primeira requisição do dia que não encontra linha de hoje gera via OpenAI e
+// salva; as demais só leem. Nunca duas linhas pro mesmo dia (unique em `data`).
+model AnaliseReposicaoIA {
+  id       Int      @id @default(autoincrement())
+  data     DateTime @unique @db.Date
+  resumo   String?
+  itens    Json
+  modelo   String?
+  geradoEm DateTime @default(now())
+}

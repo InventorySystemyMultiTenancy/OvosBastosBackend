@@ -1,11 +1,6 @@
 const prisma = require('../../config/db');
 
 const DIAS_SEMANA = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
-
-// Janela fixa (independente do seletor de período da tela) usada só para medir a
-// velocidade de venda recente por unidade e decidir se ela precisa de reposição.
-const DIAS_VELOCIDADE_ESTOQUE = 7;
-const LIMITE_DIAS_COBERTURA = 3;
 const TOP_PRODUTOS_POR_CAIXA = 5;
 
 function chaveDia(data) {
@@ -31,10 +26,6 @@ async function resumo(req, res, next) {
     desde.setDate(desde.getDate() - (dias - 1));
     desde.setHours(0, 0, 0, 0);
 
-    const desdeVelocidade = new Date();
-    desdeVelocidade.setDate(desdeVelocidade.getDate() - (DIAS_VELOCIDADE_ESTOQUE - 1));
-    desdeVelocidade.setHours(0, 0, 0, 0);
-
     const agora = new Date();
 
     const [
@@ -47,7 +38,6 @@ async function resumo(req, res, next) {
       itensPeriodo,
       contasEmAberto,
       despesasPeriodo,
-      itensVelocidade,
       estoquesCaixaAtivo,
     ] = await Promise.all([
       prisma.venda.aggregate({
@@ -96,15 +86,6 @@ async function resumo(req, res, next) {
             select: { valor: true, pagoEm: true, caixaId: true },
           })
         : Promise.resolve([]),
-      prisma.itemVenda.findMany({
-        where: { venda: { status: 'CONFIRMADA', confirmadaEm: { gte: desdeVelocidade }, caixaId: { not: null } } },
-        select: {
-          quantidade: true,
-          produtoId: true,
-          produto: { select: { nome: true } },
-          venda: { select: { caixaId: true, caixa: { select: { nome: true, unidade: true } } } },
-        },
-      }),
       prisma.estoqueCaixa.findMany({
         where: { caixa: { ativo: true } },
         select: { produtoId: true, caixaId: true, quantidade: true },
@@ -192,38 +173,6 @@ async function resumo(req, res, next) {
         .sort((a, b) => b.quantidade - a.quantidade)
         .slice(0, TOP_PRODUTOS_POR_CAIXA),
     }));
-
-    // Alertas de reposição: velocidade de venda dos últimos DIAS_VELOCIDADE_ESTOQUE dias por
-    // (unidade, produto) contra o estoque atual daquela unidade — sinaliza ruptura iminente.
-    const mapaVelocidade = {};
-    itensVelocidade.forEach((i) => {
-      const chave = `${i.venda.caixaId}-${i.produtoId}`;
-      if (!mapaVelocidade[chave]) {
-        mapaVelocidade[chave] = {
-          caixaId: i.venda.caixaId,
-          caixaNome: i.venda.caixa?.nome || 'Sem caixa',
-          caixaUnidade: i.venda.caixa?.unidade || null,
-          produtoId: i.produtoId,
-          produtoNome: i.produto.nome,
-          vendidoSemana: 0,
-        };
-      }
-      mapaVelocidade[chave].vendidoSemana += i.quantidade;
-    });
-    const mapaEstoquePorCaixaProduto = {};
-    estoquesCaixaAtivo.forEach((e) => {
-      mapaEstoquePorCaixaProduto[`${e.caixaId}-${e.produtoId}`] = e.quantidade;
-    });
-    const alertasReposicao = Object.values(mapaVelocidade)
-      .map((v) => {
-        const velocidadeDiaria = v.vendidoSemana / DIAS_VELOCIDADE_ESTOQUE;
-        const estoqueAtual = mapaEstoquePorCaixaProduto[`${v.caixaId}-${v.produtoId}`] || 0;
-        const coberturaDias = velocidadeDiaria > 0 ? estoqueAtual / velocidadeDiaria : Infinity;
-        return { ...v, velocidadeDiaria, estoqueAtual, coberturaDias };
-      })
-      .filter((v) => v.velocidadeDiaria > 0 && v.coberturaDias < LIMITE_DIAS_COBERTURA)
-      .sort((a, b) => a.coberturaDias - b.coberturaDias)
-      .slice(0, 10);
 
     const mapaClientes = {};
     vendasPeriodo.forEach((v) => {
@@ -326,7 +275,6 @@ async function resumo(req, res, next) {
       melhorHora,
       despesasPeriodo: despesasPeriodoTotal,
       lucroLiquidoPeriodo,
-      alertasReposicao,
       melhoresProdutosPorCaixa,
     });
   } catch (err) {
