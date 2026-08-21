@@ -9,5 +9,6 @@ router.post('/entrada', ctrl.entrada);
 router.post('/saida', ctrl.saida);
 router.get('/historico', ctrl.historico);
 router.get('/alertas', ctrl.alertas);
+router.get('/matriz', ctrl.matriz);
 
 module.exports = router;

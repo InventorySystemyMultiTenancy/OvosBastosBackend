@@ -45,6 +45,12 @@ enum StatusPagamentoPointMP {
   CANCELADO
 }
 
+enum StatusRecebimento {
+  EM_ANDAMENTO
+  AGUARDANDO_DISTRIBUICAO
+  CONCLUIDO
+}
+
 model Usuario {
   id        Int      @id @default(autoincrement())
   nome      String
@@ -54,7 +60,8 @@ model Usuario {
   ativo     Boolean  @default(true)
   createdAt DateTime @default(now())
 
-  vendas Venda[]
+  vendas       Venda[]
+  recebimentos Recebimento[]
 }
 
 model Cliente {
@@ -75,6 +82,20 @@ model Cliente {
   contasReceber        ContaReceber[]
 }
 
+model Fornecedor {
+  id        Int      @id @default(autoincrement())
+  nome      String
+  documento String?
+  telefone  String?
+  email     String?
+  endereco  String?
+  cidade    String?
+  ativo     Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  recebimentos Recebimento[]
+}
+
 model Produto {
   id            Int      @id @default(autoincrement())
   nome          String
@@ -82,15 +103,19 @@ model Produto {
   unidade       String   @default("dúzia")
   precoVenda    Decimal  @db.Decimal(12, 2)
   precoCusto    Decimal? @db.Decimal(12, 2)
+  // Pool central de estoque "recebido e ainda não distribuído" às unidades — não é mais
+  // "estoque disponível para venda" quando a venda tem caixa associada (ver EstoqueCaixa).
   quantidade    Int      @default(0)
   estoqueMinimo Int      @default(0)
   imagemUrl     String?
   ativo         Boolean  @default(true)
   createdAt     DateTime @default(now())
 
-  lotes         Lote[]
-  movimentacoes MovimentacaoEstoque[]
-  itensVenda    ItemVenda[]
+  lotes            Lote[]
+  movimentacoes    MovimentacaoEstoque[]
+  itensVenda       ItemVenda[]
+  itensRecebimento ItemRecebimento[]
+  estoquePorCaixa  EstoqueCaixa[]
 }
 
 model Lote {
@@ -106,10 +131,50 @@ model MovimentacaoEstoque {
   id         Int                     @id @default(autoincrement())
   produtoId  Int
   produto    Produto                 @relation(fields: [produtoId], references: [id], onDelete: Cascade)
+  caixaId    Int? // null = movimento no pool central; setado = entrada/saída numa unidade
+  caixa      Caixa?                  @relation(fields: [caixaId], references: [id])
   tipo       TipoMovimentacaoEstoque
   quantidade Int
   motivo     String?
   createdAt  DateTime                @default(now())
+}
+
+model Recebimento {
+  id            Int               @id @default(autoincrement())
+  status        StatusRecebimento @default(EM_ANDAMENTO)
+  fornecedorId  Int?
+  fornecedor    Fornecedor?       @relation(fields: [fornecedorId], references: [id])
+  criadoPorId   Int?
+  criadoPor     Usuario?          @relation(fields: [criadoPorId], references: [id])
+  observacao    String?
+  createdAt     DateTime          @default(now())
+  finalizadoEm  DateTime?
+  distribuidoEm DateTime?
+
+  itens ItemRecebimento[]
+}
+
+model ItemRecebimento {
+  id                    Int         @id @default(autoincrement())
+  recebimentoId         Int
+  recebimento           Recebimento @relation(fields: [recebimentoId], references: [id], onDelete: Cascade)
+  produtoId             Int
+  produto               Produto     @relation(fields: [produtoId], references: [id])
+  quantidadeRecebida    Int
+  quantidadeDistribuida Int         @default(0)
+
+  @@unique([recebimentoId, produtoId])
+}
+
+model EstoqueCaixa {
+  id         Int     @id @default(autoincrement())
+  produtoId  Int
+  produto    Produto @relation(fields: [produtoId], references: [id], onDelete: Cascade)
+  caixaId    Int
+  caixa      Caixa   @relation(fields: [caixaId], references: [id], onDelete: Cascade)
+  quantidade Int     @default(0)
+
+  @@unique([produtoId, caixaId])
 }
 
 model BandejaCliente {
@@ -163,10 +228,12 @@ model Caixa {
   mpNicknameConta  String? // nickname/email da conta MP, apenas para exibição
   mpDeviceId       String? // device_id da maquininha (Point Smart) associada a este caixa
 
-  vendas            Venda[]
-  contasPagar       ContaPagar[]
-  contasReceber     ContaReceber[]
-  pagamentosPointMP PagamentoPointMP[]
+  vendas               Venda[]
+  contasPagar          ContaPagar[]
+  contasReceber        ContaReceber[]
+  pagamentosPointMP    PagamentoPointMP[]
+  estoque              EstoqueCaixa[]
+  movimentacoesEstoque MovimentacaoEstoque[]
 }
 
 model PagamentoPointMP {

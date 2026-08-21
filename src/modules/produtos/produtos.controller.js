@@ -3,11 +3,21 @@ const cloudinary = require('../../config/cloudinary');
 
 async function listar(req, res, next) {
   try {
-    const produtos = await prisma.produto.findMany({
-      where: { ativo: true },
-      orderBy: { nome: 'asc' },
+    const [produtos, estoques] = await Promise.all([
+      prisma.produto.findMany({ where: { ativo: true }, orderBy: { nome: 'asc' } }),
+      prisma.estoqueCaixa.findMany({ where: { caixa: { ativo: true } } }),
+    ]);
+    const mapaDistribuido = {};
+    estoques.forEach((e) => {
+      mapaDistribuido[e.produtoId] = (mapaDistribuido[e.produtoId] || 0) + e.quantidade;
     });
-    res.json(produtos);
+    res.json(
+      produtos.map((p) => ({
+        ...p,
+        quantidadeDistribuida: mapaDistribuido[p.id] || 0,
+        estoqueTotal: p.quantidade + (mapaDistribuido[p.id] || 0),
+      }))
+    );
   } catch (err) {
     next(err);
   }

@@ -58,4 +58,21 @@ async function atualizar(req, res, next) {
   }
 }
 
-module.exports = { listar, criar, atualizar };
+async function estoquePorCaixa(req, res, next) {
+  try {
+    const caixaId = Number(req.params.id);
+    const caixa = await prisma.caixa.findUnique({ where: { id: caixaId } });
+    if (!caixa || !caixa.ativo) return res.status(404).json({ error: 'Caixa não encontrado' });
+
+    const [produtos, estoques] = await Promise.all([
+      prisma.produto.findMany({ where: { ativo: true }, orderBy: { nome: 'asc' } }),
+      prisma.estoqueCaixa.findMany({ where: { caixaId } }),
+    ]);
+    const mapaQtd = new Map(estoques.map((e) => [e.produtoId, e.quantidade]));
+    res.json(produtos.map((p) => ({ ...p, quantidade: mapaQtd.get(p.id) || 0 })));
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { listar, criar, atualizar, estoquePorCaixa };

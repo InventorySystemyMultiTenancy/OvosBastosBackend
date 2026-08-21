@@ -72,8 +72,18 @@ async function historico(req, res, next) {
 
 async function alertas(req, res, next) {
   try {
-    const produtos = await prisma.produto.findMany({ where: { ativo: true } });
-    const estoqueBaixo = produtos.filter((p) => p.quantidade <= p.estoqueMinimo);
+    const [produtos, estoques] = await Promise.all([
+      prisma.produto.findMany({ where: { ativo: true } }),
+      prisma.estoqueCaixa.findMany({ where: { caixa: { ativo: true } } }),
+    ]);
+    // Total físico = pool central (recebido, ainda não distribuído) + soma distribuída
+    // às unidades ativas. Comparar só o pool central geraria falso "estoque baixo" em
+    // todo produto totalmente distribuído (o pool central zera nesse caso, de propósito).
+    const mapaDistribuido = {};
+    estoques.forEach((e) => {
+      mapaDistribuido[e.produtoId] = (mapaDistribuido[e.produtoId] || 0) + e.quantidade;
+    });
+    const estoqueBaixo = produtos.filter((p) => p.quantidade + (mapaDistribuido[p.id] || 0) <= p.estoqueMinimo);
 
     const emSeteDias = new Date();
     emSeteDias.setDate(emSeteDias.getDate() + 7);
@@ -89,4 +99,31 @@ async function alertas(req, res, next) {
   }
 }
 
-module.exports = { entrada, saida, historico, alertas };
+async function matriz(req, res, next) {
+  try {
+    const [produtos, caixas, estoques] = await Promise.all([
+      prisma.produto.findMany({ where: { ativo: true }, orderBy: { nome: 'asc' } }),
+      prisma.caixa.findMany({ where: { ativo: true }, orderBy: { id: 'asc' } }),
+      prisma.estoqueCaixa.findMany(),
+    ]);
+    const celulas = {};
+    estoques.forEach((e) => {
+      celulas[`${e.produtoId}-${e.caixaId}`] = e.quantidade;
+    });
+    res.json({
+      produtos: produtos.map((p) => ({
+        id: p.id,
+        nome: p.nome,
+        unidade: p.unidade,
+        naoDistribuido: p.quantidade,
+        estoqueMinimo: p.estoqueMinimo,
+      })),
+      caixas: caixas.map((c) => ({ id: c.id, nome: c.nome, unidade: c.unidade })),
+      celulas,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { entrada, saida, historico, alertas, matriz };

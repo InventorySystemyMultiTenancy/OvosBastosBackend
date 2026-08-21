@@ -7,6 +7,7 @@ const router = Router();
 
 router.use(authenticate);
 router.get('/', ctrl.listar);
+router.get('/:id/estoque', ctrl.estoquePorCaixa);
 router.post('/', requireRole('ADMIN'), ctrl.criar);
 router.put('/:id', requireRole('ADMIN'), ctrl.atualizar);
 
