@@ -8,5 +8,6 @@ router.post('/login', ctrl.login);
 router.get('/me', authenticate, ctrl.me);
 router.get('/usuarios', authenticate, requireRole('ADMIN'), ctrl.listarUsuarios);
 router.post('/usuarios', authenticate, requireRole('ADMIN'), ctrl.criarUsuario);
+router.put('/usuarios/:id', authenticate, requireRole('ADMIN'), ctrl.atualizarUsuario);
 
 module.exports = router;

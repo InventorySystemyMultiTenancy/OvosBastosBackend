@@ -42,4 +42,12 @@ async function distribuir(req, res, next) {
   }
 }
 
-module.exports = { listar, obter, criar, definirFornecedor, distribuir };
+async function pagar(req, res, next) {
+  try {
+    res.json(await service.pagar(req.params.id, req.body.valor));
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { listar, obter, criar, definirFornecedor, distribuir, pagar };

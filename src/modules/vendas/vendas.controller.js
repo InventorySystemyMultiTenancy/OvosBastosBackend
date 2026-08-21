@@ -56,11 +56,21 @@ function calcularTotal(itensComPreco, desconto) {
   return Math.max(bruto - Number(desconto || 0), 0);
 }
 
+// Login travado a um caixa (Usuario.caixaId) só pode vender por aquela unidade — mesmo
+// que o corpo da requisição peça outra, isso é barrado aqui (não só escondido no frontend).
+function caixaPermitida(req, caixaId) {
+  if (!req.usuario?.caixaId) return true;
+  return Number(caixaId) === req.usuario.caixaId;
+}
+
 async function criar(req, res, next) {
   try {
     const { clienteId, itens, desconto, caixaId } = req.body;
     if (!clienteId || !Array.isArray(itens) || itens.length === 0) {
       return res.status(400).json({ error: 'clienteId e ao menos um item são obrigatórios' });
+    }
+    if (!caixaPermitida(req, caixaId)) {
+      return res.status(400).json({ error: 'Este login só pode vender pela unidade designada' });
     }
 
     const produtos = await prisma.produto.findMany({
@@ -98,6 +108,9 @@ async function checkout(req, res, next) {
 
     if (!nomeCliente || !nomeCliente.trim()) {
       return res.status(400).json({ error: 'Informe o nome do cliente' });
+    }
+    if (!caixaPermitida(req, caixaId)) {
+      return res.status(400).json({ error: 'Este login só pode vender pela unidade designada' });
     }
 
     const cliente = await encontrarOuCriarClientePorNome(nomeCliente);

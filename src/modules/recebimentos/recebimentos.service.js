@@ -4,6 +4,7 @@ const INCLUDE_PADRAO = {
   fornecedor: true,
   criadoPor: { select: { id: true, nome: true } },
   itens: { include: { produto: true } },
+  pagamentos: { orderBy: { createdAt: 'desc' } },
 };
 
 async function listar() {
@@ -72,7 +73,7 @@ async function definirFornecedor(id, fornecedorId) {
     throw Object.assign(new Error('fornecedorId é obrigatório'), { status: 400 });
   }
 
-  const recebimento = await prisma.recebimento.findUnique({ where: { id: Number(id) } });
+  const recebimento = await prisma.recebimento.findUnique({ where: { id: Number(id) }, include: { itens: true } });
   if (!recebimento) {
     throw Object.assign(new Error('Recebimento não encontrado'), { status: 404 });
   }
@@ -85,10 +86,49 @@ async function definirFornecedor(id, fornecedorId) {
     throw Object.assign(new Error('Fornecedor inválido'), { status: 400 });
   }
 
+  // Trava o valor devido nesse momento (itens × preço cadastrado do fornecedor). Produto
+  // sem preço cadastrado contribui 0 — editar a tabela de preços depois não reabre esse total.
+  const precos = await prisma.precoFornecedor.findMany({ where: { fornecedorId: fornecedor.id } });
+  const mapaPrecos = new Map(precos.map((p) => [p.produtoId, Number(p.precoUnitario)]));
+  const valorTotal = recebimento.itens.reduce(
+    (soma, item) => soma + item.quantidadeRecebida * (mapaPrecos.get(item.produtoId) || 0),
+    0
+  );
+
   await prisma.recebimento.update({
     where: { id: Number(id) },
-    data: { fornecedorId: fornecedor.id, status: 'AGUARDANDO_DISTRIBUICAO', finalizadoEm: new Date() },
+    data: { fornecedorId: fornecedor.id, status: 'AGUARDANDO_DISTRIBUICAO', finalizadoEm: new Date(), valorTotal },
   });
+
+  return obter(id);
+}
+
+async function pagar(id, valor) {
+  const valorNum = Number(valor);
+  if (!valorNum || valorNum <= 0) {
+    throw Object.assign(new Error('valor deve ser maior que zero'), { status: 400 });
+  }
+
+  const recebimento = await prisma.recebimento.findUnique({ where: { id: Number(id) } });
+  if (!recebimento) {
+    throw Object.assign(new Error('Recebimento não encontrado'), { status: 404 });
+  }
+  if (recebimento.status === 'EM_ANDAMENTO' || recebimento.valorTotal === null) {
+    throw Object.assign(new Error('Defina o fornecedor antes de registrar pagamentos'), { status: 400 });
+  }
+
+  const restante = Number(recebimento.valorTotal) - Number(recebimento.valorPago);
+  if (valorNum > restante) {
+    throw Object.assign(
+      new Error(`Valor (${valorNum}) excede o restante devido (${restante})`),
+      { status: 400 }
+    );
+  }
+
+  await prisma.$transaction([
+    prisma.pagamentoRecebimento.create({ data: { recebimentoId: recebimento.id, valor: valorNum } }),
+    prisma.recebimento.update({ where: { id: recebimento.id }, data: { valorPago: { increment: valorNum } } }),
+  ]);
 
   return obter(id);
 }
@@ -192,4 +232,4 @@ async function distribuir(id, distribuicoes) {
   return obter(id);
 }
 
-module.exports = { listar, obter, criar, definirFornecedor, distribuir };
+module.exports = { listar, obter, criar, definirFornecedor, distribuir, pagar };

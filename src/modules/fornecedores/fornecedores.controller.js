@@ -63,4 +63,54 @@ async function remover(req, res, next) {
   }
 }
 
-module.exports = { listar, obter, criar, atualizar, remover };
+async function listarPrecos(req, res, next) {
+  try {
+    const fornecedorId = Number(req.params.id);
+    const [produtos, precos] = await Promise.all([
+      prisma.produto.findMany({ where: { ativo: true }, orderBy: { nome: 'asc' } }),
+      prisma.precoFornecedor.findMany({ where: { fornecedorId } }),
+    ]);
+    const mapaPrecos = new Map(precos.map((p) => [p.produtoId, p.precoUnitario]));
+    res.json(
+      produtos.map((p) => ({
+        produtoId: p.id,
+        nome: p.nome,
+        unidade: p.unidade,
+        precoUnitario: mapaPrecos.has(p.id) ? mapaPrecos.get(p.id) : null,
+      }))
+    );
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function salvarPrecos(req, res, next) {
+  try {
+    const fornecedorId = Number(req.params.id);
+    const { precos } = req.body;
+    if (!Array.isArray(precos)) {
+      return res.status(400).json({ error: 'precos é obrigatório' });
+    }
+
+    const linhas = precos
+      .map((p) => ({ produtoId: Number(p.produtoId), precoUnitario: Number(p.precoUnitario) }))
+      .filter((p) => p.produtoId && !Number.isNaN(p.precoUnitario) && p.precoUnitario >= 0);
+
+    await prisma.$transaction(
+      linhas.map((linha) =>
+        prisma.precoFornecedor.upsert({
+          where: { fornecedorId_produtoId: { fornecedorId, produtoId: linha.produtoId } },
+          create: { fornecedorId, produtoId: linha.produtoId, precoUnitario: linha.precoUnitario },
+          update: { precoUnitario: linha.precoUnitario },
+        })
+      )
+    );
+
+    const precosAtualizados = await prisma.precoFornecedor.findMany({ where: { fornecedorId } });
+    res.json(precosAtualizados);
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { listar, obter, criar, atualizar, remover, listarPrecos, salvarPrecos };

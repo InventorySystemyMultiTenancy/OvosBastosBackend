@@ -11,5 +11,6 @@ router.get('/:id', ctrl.obter);
 router.post('/', ctrl.criar);
 router.put('/:id/fornecedor', ctrl.definirFornecedor);
 router.post('/:id/distribuir', ctrl.distribuir);
+router.post('/:id/pagamentos', ctrl.pagar);
 
 module.exports = router;

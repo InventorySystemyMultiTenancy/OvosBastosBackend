@@ -60,6 +60,9 @@ model Usuario {
   ativo     Boolean  @default(true)
   createdAt DateTime @default(now())
 
+  caixaId Int?
+  caixa   Caixa? @relation(fields: [caixaId], references: [id])
+
   vendas       Venda[]
   recebimentos Recebimento[]
 }
@@ -94,6 +97,19 @@ model Fornecedor {
   createdAt DateTime @default(now())
 
   recebimentos Recebimento[]
+  precos       PrecoFornecedor[]
+}
+
+model PrecoFornecedor {
+  id            Int        @id @default(autoincrement())
+  fornecedorId  Int
+  fornecedor    Fornecedor @relation(fields: [fornecedorId], references: [id], onDelete: Cascade)
+  produtoId     Int
+  produto       Produto    @relation(fields: [produtoId], references: [id], onDelete: Cascade)
+  precoUnitario Decimal    @db.Decimal(12, 2)
+  updatedAt     DateTime   @updatedAt
+
+  @@unique([fornecedorId, produtoId])
 }
 
 model Produto {
@@ -116,6 +132,7 @@ model Produto {
   itensVenda       ItemVenda[]
   itensRecebimento ItemRecebimento[]
   estoquePorCaixa  EstoqueCaixa[]
+  precosFornecedor PrecoFornecedor[]
 }
 
 model Lote {
@@ -151,7 +168,21 @@ model Recebimento {
   finalizadoEm  DateTime?
   distribuidoEm DateTime?
 
-  itens ItemRecebimento[]
+  // Travado (snapshot) ao definir o fornecedor: itens × PrecoFornecedor naquele momento.
+  // Editar a tabela de preços depois não muda o valor de entregas já fechadas.
+  valorTotal Decimal? @db.Decimal(12, 2)
+  valorPago  Decimal  @default(0) @db.Decimal(12, 2)
+
+  itens      ItemRecebimento[]
+  pagamentos PagamentoRecebimento[]
+}
+
+model PagamentoRecebimento {
+  id            Int         @id @default(autoincrement())
+  recebimentoId Int
+  recebimento   Recebimento @relation(fields: [recebimentoId], references: [id], onDelete: Cascade)
+  valor         Decimal     @db.Decimal(12, 2)
+  createdAt     DateTime    @default(now())
 }
 
 model ItemRecebimento {
@@ -240,6 +271,7 @@ model Caixa {
   pagamentosPointMP    PagamentoPointMP[]
   estoque              EstoqueCaixa[]
   movimentacoesEstoque MovimentacaoEstoque[]
+  usuarios             Usuario[]
 }
 
 model PagamentoPointMP {
@@ -280,6 +312,14 @@ model ContaReceber {
   pago       Boolean   @default(false)
   pagoEm     DateTime?
   createdAt  DateTime  @default(now())
+
+  // Conta fixa mensal: a linha original (recorrente=true) é o "template" — os meses
+  // seguintes são projetados na hora de listar e só viram linha real quando pagos
+  // (ver financeiro.controller.js). Instâncias materializadas apontam de volta pro template.
+  recorrente         Boolean        @default(false)
+  origemRecorrenteId Int?
+  origemRecorrente   ContaReceber?  @relation("RecorrenciaContaReceber", fields: [origemRecorrenteId], references: [id])
+  ocorrencias        ContaReceber[] @relation("RecorrenciaContaReceber")
 }
 
 model ContaPagar {
@@ -293,4 +333,9 @@ model ContaPagar {
   pago       Boolean   @default(false)
   pagoEm     DateTime?
   createdAt  DateTime  @default(now())
+
+  recorrente         Boolean      @default(false)
+  origemRecorrenteId Int?
+  origemRecorrente   ContaPagar?  @relation("RecorrenciaContaPagar", fields: [origemRecorrenteId], references: [id])
+  ocorrencias        ContaPagar[] @relation("RecorrenciaContaPagar")
 }
