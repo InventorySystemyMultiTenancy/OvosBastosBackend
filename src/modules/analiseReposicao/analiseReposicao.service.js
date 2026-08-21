@@ -3,9 +3,14 @@ const prisma = require('../../config/db');
 const DIAS_VELOCIDADE_ESTOQUE = 7;
 const TOP_ITENS = 10;
 
-function inicioDeHoje() {
+// Segunda-feira da semana atual, hora zerada — chave de cache da análise (uma linha por
+// semana, não por dia).
+function inicioDaSemana() {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
+  const diaSemana = d.getDay(); // 0=domingo .. 6=sábado
+  const deslocamento = diaSemana === 0 ? 6 : diaSemana - 1;
+  d.setDate(d.getDate() - deslocamento);
   return d;
 }
 
@@ -183,20 +188,18 @@ function enriquecerItensIA(itensIA, dadosBrutos) {
     .slice(0, TOP_ITENS);
 }
 
-async function gerarAnaliseDoDia({ forcar = false } = {}) {
-  const hoje = inicioDeHoje();
+async function gerarAnaliseDaSemana() {
+  const inicioSemana = inicioDaSemana();
 
-  if (!forcar) {
-    const existente = await prisma.analiseReposicaoIA.findUnique({ where: { data: hoje } });
-    if (existente) return existente;
-  }
+  const existente = await prisma.analiseReposicaoIA.findUnique({ where: { data: inicioSemana } });
+  if (existente) return existente;
 
   const dadosBrutos = await calcularDadosBrutos();
 
   if (dadosBrutos.length === 0) {
     return prisma.analiseReposicaoIA.upsert({
-      where: { data: hoje },
-      create: { data: hoje, resumo: null, itens: [] },
+      where: { data: inicioSemana },
+      create: { data: inicioSemana, resumo: null, itens: [] },
       update: { resumo: null, itens: [], geradoEm: new Date() },
     });
   }
@@ -206,15 +209,15 @@ async function gerarAnaliseDoDia({ forcar = false } = {}) {
   const itens = enriquecerItensIA(resultado.itens, dadosBrutos);
 
   return prisma.analiseReposicaoIA.upsert({
-    where: { data: hoje },
-    create: { data: hoje, resumo: resultado.resumo, itens, modelo: resultado.modelo },
+    where: { data: inicioSemana },
+    create: { data: inicioSemana, resumo: resultado.resumo, itens, modelo: resultado.modelo },
     update: { resumo: resultado.resumo, itens, modelo: resultado.modelo, geradoEm: new Date() },
   });
 }
 
 async function obterAnaliseAtual() {
   try {
-    const analise = await gerarAnaliseDoDia();
+    const analise = await gerarAnaliseDaSemana();
     return { ...analise, stale: false, modoFallback: false };
   } catch (err) {
     console.error('Falha ao gerar análise de reposição por IA:', err.message);
@@ -224,8 +227,8 @@ async function obterAnaliseAtual() {
 
     const dadosBrutos = await calcularDadosBrutos();
     const fallback = calcularFallbackDeterministico(dadosBrutos);
-    return { id: null, data: inicioDeHoje(), geradoEm: new Date(), modelo: null, ...fallback, stale: false, modoFallback: true };
+    return { id: null, data: inicioDaSemana(), geradoEm: new Date(), modelo: null, ...fallback, stale: false, modoFallback: true };
   }
 }
 
-module.exports = { obterAnaliseAtual, gerarAnaliseDoDia };
+module.exports = { obterAnaliseAtual };

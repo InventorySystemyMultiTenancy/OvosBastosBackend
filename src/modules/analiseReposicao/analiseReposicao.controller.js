@@ -8,13 +8,4 @@ async function obter(req, res, next) {
   }
 }
 
-async function gerar(req, res, next) {
-  try {
-    const analise = await service.gerarAnaliseDoDia({ forcar: true });
-    res.json({ ...analise, stale: false, modoFallback: false });
-  } catch (err) {
-    next(err);
-  }
-}
-
-module.exports = { obter, gerar };
+module.exports = { obter };

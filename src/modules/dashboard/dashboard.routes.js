@@ -5,5 +5,6 @@ const ctrl = require('./dashboard.controller');
 const router = Router();
 
 router.get('/', authenticate, ctrl.resumo);
+router.get('/reposicao-mensal', authenticate, ctrl.reposicaoMensal);
 
 module.exports = router;

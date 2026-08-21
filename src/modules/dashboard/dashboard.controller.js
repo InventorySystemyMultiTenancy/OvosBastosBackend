@@ -282,4 +282,65 @@ async function resumo(req, res, next) {
   }
 }
 
-module.exports = { resumo };
+// Quanto cada unidade precisa receber de volta pra voltar ao estoque que tinha no início do
+// mês. Reconstruído a partir do razão de MovimentacaoEstoque (sem precisar guardar um
+// snapshot): estoque no início do mês = estoque atual - entradas do mês + saídas do mês,
+// já que toda mudança em EstoqueCaixa.quantidade tem uma MovimentacaoEstoque correspondente.
+async function reposicaoMensal(req, res, next) {
+  try {
+    const inicioMes = new Date();
+    inicioMes.setDate(1);
+    inicioMes.setHours(0, 0, 0, 0);
+
+    const [movimentacoesMes, estoques] = await Promise.all([
+      prisma.movimentacaoEstoque.findMany({
+        where: { caixaId: { not: null }, createdAt: { gte: inicioMes } },
+        select: { caixaId: true, produtoId: true, tipo: true, quantidade: true },
+      }),
+      prisma.estoqueCaixa.findMany({
+        where: { caixa: { ativo: true } },
+        select: {
+          caixaId: true,
+          produtoId: true,
+          quantidade: true,
+          caixa: { select: { nome: true, unidade: true } },
+          produto: { select: { nome: true } },
+        },
+      }),
+    ]);
+
+    const mapaMovimento = {};
+    movimentacoesMes.forEach((m) => {
+      const chave = `${m.caixaId}-${m.produtoId}`;
+      if (!mapaMovimento[chave]) mapaMovimento[chave] = { entrada: 0, saida: 0 };
+      if (m.tipo === 'ENTRADA') mapaMovimento[chave].entrada += m.quantidade;
+      else mapaMovimento[chave].saida += m.quantidade;
+    });
+
+    const itens = estoques
+      .map((e) => {
+        const mov = mapaMovimento[`${e.caixaId}-${e.produtoId}`] || { entrada: 0, saida: 0 };
+        const estoqueInicioMes = e.quantidade - mov.entrada + mov.saida;
+        return {
+          caixaId: e.caixaId,
+          caixaNome: e.caixa.nome,
+          caixaUnidade: e.caixa.unidade,
+          produtoId: e.produtoId,
+          produtoNome: e.produto.nome,
+          estoqueInicioMes,
+          estoqueAtual: e.quantidade,
+          recebidoMes: mov.entrada,
+          saidoMes: mov.saida,
+          faltaRepor: Math.max(0, estoqueInicioMes - e.quantidade),
+        };
+      })
+      .filter((i) => i.faltaRepor > 0)
+      .sort((a, b) => b.faltaRepor - a.faltaRepor);
+
+    res.json({ inicioMes, itens });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { resumo, reposicaoMensal };
