@@ -26,4 +26,7 @@ router.get('/fluxo-caixa', ctrl.fluxoCaixa);
 router.get('/resumo-caixas', ctrl.resumoPorCaixa);
 router.get('/relatorio-periodo', ctrl.relatorioPeriodo);
 
+router.get('/sessoes-caixa', ctrl.listarSessoesCaixa);
+router.put('/sessoes-caixa/:id/revisar-divergencia', ctrl.revisarDivergenciaSessaoCaixa);
+
 module.exports = router;

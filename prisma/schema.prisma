@@ -51,6 +51,11 @@ enum StatusRecebimento {
   CONCLUIDO
 }
 
+enum StatusSessaoCaixa {
+  ABERTA
+  FECHADA
+}
+
 model Usuario {
   id        Int      @id @default(autoincrement())
   nome      String
@@ -65,6 +70,9 @@ model Usuario {
 
   vendas       Venda[]
   recebimentos Recebimento[]
+
+  sessoesCaixaAbertas  SessaoCaixa[] @relation("SessaoCaixaAbertura")
+  sessoesCaixaFechadas SessaoCaixa[] @relation("SessaoCaixaFechamento")
 }
 
 model Cliente {
@@ -272,6 +280,39 @@ model Caixa {
   estoque              EstoqueCaixa[]
   movimentacoesEstoque MovimentacaoEstoque[]
   usuarios             Usuario[]
+  sessoes              SessaoCaixa[]
+}
+
+// Abertura/fechamento de caixa (sessão de turno): cada vez que um funcionário assume o
+// caixa físico de uma unidade, ele conta o dinheiro e abre uma sessão; ao sair, conta de
+// novo e fecha informando quanto deixou. valorEsperadoAbertura/divergenciaAbertura são
+// travados no momento da abertura, comparando com o valorFechamento da sessão FECHADA mais
+// recente daquele mesmo caixa — é o que alimenta o alerta de divergência pro admin.
+model SessaoCaixa {
+  id      Int               @id @default(autoincrement())
+  caixaId Int
+  caixa   Caixa             @relation(fields: [caixaId], references: [id])
+  status  StatusSessaoCaixa @default(ABERTA)
+
+  usuarioAberturaId Int
+  usuarioAbertura   Usuario  @relation("SessaoCaixaAbertura", fields: [usuarioAberturaId], references: [id])
+  valorAbertura     Decimal  @db.Decimal(12, 2)
+  abertaEm          DateTime @default(now())
+
+  usuarioFechamentoId  Int?
+  usuarioFechamento    Usuario?  @relation("SessaoCaixaFechamento", fields: [usuarioFechamentoId], references: [id])
+  valorFechamento      Decimal?  @db.Decimal(12, 2)
+  fechadaEm            DateTime?
+  observacaoFechamento String?
+
+  valorEsperadoAbertura Decimal? @db.Decimal(12, 2)
+  divergenciaAbertura   Decimal? @db.Decimal(12, 2)
+  divergenciaRevisada   Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([caixaId, status])
+  @@index([caixaId, fechadaEm])
 }
 
 model PagamentoPointMP {

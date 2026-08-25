@@ -39,6 +39,7 @@ async function resumo(req, res, next) {
       contasEmAberto,
       despesasPeriodo,
       estoquesCaixaAtivo,
+      divergenciasCaixaAbertas,
     ] = await Promise.all([
       prisma.venda.aggregate({
         where: { status: 'CONFIRMADA', confirmadaEm: { gte: inicioHoje } },
@@ -90,6 +91,20 @@ async function resumo(req, res, next) {
         where: { caixa: { ativo: true } },
         select: { produtoId: true, caixaId: true, quantidade: true },
       }),
+      // Divergências de contagem entre o fechamento de um turno e a abertura do próximo,
+      // ainda não revisadas pelo admin — ver src/modules/caixas/sessoesCaixa.controller.js.
+      ehAdmin
+        ? prisma.sessaoCaixa.findMany({
+            where: { divergenciaAbertura: { not: null }, NOT: { divergenciaAbertura: 0 }, divergenciaRevisada: false },
+            orderBy: { abertaEm: 'desc' },
+            take: 5,
+            include: {
+              caixa: { select: { nome: true, unidade: true } },
+              usuarioAbertura: { select: { nome: true } },
+              usuarioFechamento: { select: { nome: true } },
+            },
+          })
+        : Promise.resolve([]),
     ]);
 
     const bandejasPendentes = bandejas.reduce((soma, b) => soma + (b.emprestadas - b.devolvidas), 0);
@@ -276,6 +291,19 @@ async function resumo(req, res, next) {
       despesasPeriodo: despesasPeriodoTotal,
       lucroLiquidoPeriodo,
       melhoresProdutosPorCaixa,
+      divergenciasCaixa: ehAdmin
+        ? divergenciasCaixaAbertas.map((d) => ({
+            id: d.id,
+            caixaNome: d.caixa.nome,
+            caixaUnidade: d.caixa.unidade,
+            usuarioFechamento: d.usuarioFechamento?.nome || null,
+            usuarioAbertura: d.usuarioAbertura.nome,
+            valorFechamento: d.valorFechamento,
+            valorAbertura: d.valorAbertura,
+            divergencia: d.divergenciaAbertura,
+            abertaEm: d.abertaEm,
+          }))
+        : [],
     });
   } catch (err) {
     next(err);

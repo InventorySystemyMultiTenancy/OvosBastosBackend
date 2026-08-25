@@ -1,4 +1,5 @@
 const prisma = require('../../config/db');
+const { exigirCaixaAberto } = require('../caixas/sessoesCaixa.service');
 
 const INCLUDE_PADRAO = {
   cliente: true,
@@ -43,6 +44,7 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
     if (!caixa || !caixa.ativo) {
       throw Object.assign(new Error('Caixa/unidade inválido'), { status: 400 });
     }
+    await exigirCaixaAberto(caixaId);
   } else if (viaMaquininha) {
     throw Object.assign(new Error('Selecione um caixa para cobrar na maquininha'), { status: 400 });
   }
@@ -166,6 +168,10 @@ async function confirmarVenda(vendaId, { formaPagamento, vencimento }) {
   }
   if (venda.status !== 'ORCAMENTO') {
     throw Object.assign(new Error('Somente orçamentos podem ser confirmados'), { status: 400 });
+  }
+
+  if (venda.caixaId) {
+    await exigirCaixaAberto(venda.caixaId);
   }
 
   for (const item of venda.itens) {

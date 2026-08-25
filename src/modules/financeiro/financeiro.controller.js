@@ -493,6 +493,58 @@ async function relatorioPeriodo(req, res, next) {
   }
 }
 
+const SESSAO_CAIXA_INCLUDE = {
+  caixa: { select: { id: true, nome: true, unidade: true } },
+  usuarioAbertura: { select: { id: true, nome: true } },
+  usuarioFechamento: { select: { id: true, nome: true } },
+};
+
+async function listarSessoesCaixa(req, res, next) {
+  try {
+    const { caixaId, usuarioId, de, ate, apenasDivergencia } = req.query;
+    const where = {};
+    if (caixaId) where.caixaId = Number(caixaId);
+    if (usuarioId) {
+      where.OR = [{ usuarioAberturaId: Number(usuarioId) }, { usuarioFechamentoId: Number(usuarioId) }];
+    }
+    if (de || ate) {
+      where.abertaEm = {};
+      if (de) where.abertaEm.gte = new Date(de);
+      if (ate) {
+        const fim = new Date(ate);
+        fim.setHours(23, 59, 59, 999);
+        where.abertaEm.lte = fim;
+      }
+    }
+    if (apenasDivergencia === 'true') {
+      where.divergenciaAbertura = { not: null };
+      where.NOT = { divergenciaAbertura: 0 };
+    }
+
+    const sessoes = await prisma.sessaoCaixa.findMany({
+      where,
+      include: SESSAO_CAIXA_INCLUDE,
+      orderBy: { abertaEm: 'desc' },
+    });
+    res.json(sessoes);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function revisarDivergenciaSessaoCaixa(req, res, next) {
+  try {
+    const sessao = await prisma.sessaoCaixa.update({
+      where: { id: Number(req.params.id) },
+      data: { divergenciaRevisada: true },
+      include: SESSAO_CAIXA_INCLUDE,
+    });
+    res.json(sessao);
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   vendasHojePorForma,
   fornecedoresProdutos,
@@ -510,4 +562,6 @@ module.exports = {
   fluxoCaixa,
   resumoPorCaixa,
   relatorioPeriodo,
+  listarSessoesCaixa,
+  revisarDivergenciaSessaoCaixa,
 };
