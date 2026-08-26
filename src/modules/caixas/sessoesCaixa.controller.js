@@ -43,7 +43,15 @@ async function sessaoAtual(req, res, next) {
       }),
     ]);
 
-    res.json({ sessaoAberta, ultimoFechamento });
+    // Funcionário não-admin não pode ver o valor do fechamento anterior antes de contar o
+    // caixa — senão bastaria digitar o mesmo número pra mascarar uma diferença real (furto).
+    const ehAdmin = req.usuario?.perfil === 'ADMIN';
+    const ultimoFechamentoResposta =
+      ultimoFechamento && !ehAdmin
+        ? { fechadaEm: ultimoFechamento.fechadaEm, usuarioFechamento: ultimoFechamento.usuarioFechamento }
+        : ultimoFechamento;
+
+    res.json({ sessaoAberta, ultimoFechamento: ultimoFechamentoResposta });
   } catch (err) {
     next(err);
   }
@@ -87,7 +95,16 @@ async function abrir(req, res, next) {
       include: INCLUDE_SESSAO,
     });
 
-    res.status(201).json({ ...sessao, divergenciaDetectada: Boolean(divergenciaAbertura) });
+    // Mesmo motivo do sessaoAtual: valor esperado e divergência exata ficam só com o admin,
+    // pra não-admin só vai o booleano (já é o suficiente pra avisar sem revelar o quanto).
+    const ehAdmin = req.usuario?.perfil === 'ADMIN';
+    const resposta = { ...sessao, divergenciaDetectada: Boolean(divergenciaAbertura) };
+    if (!ehAdmin) {
+      delete resposta.valorEsperadoAbertura;
+      delete resposta.divergenciaAbertura;
+    }
+
+    res.status(201).json(resposta);
   } catch (err) {
     next(err);
   }
