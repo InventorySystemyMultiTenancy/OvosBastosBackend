@@ -3,6 +3,13 @@ const prisma = require('../../config/db');
 const DIAS_SEMANA = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 const TOP_PRODUTOS_POR_CAIXA = 5;
 
+// null quando não há base de comparação (período anterior zerado) — o front mostra "novo"
+// nesse caso em vez de uma porcentagem sem sentido.
+function variacaoPct(atual, anterior) {
+  if (!anterior) return atual > 0 ? null : 0;
+  return ((atual - anterior) / anterior) * 100;
+}
+
 function chaveDia(data) {
   const d = new Date(data);
   const ano = d.getFullYear();
@@ -26,6 +33,11 @@ async function resumo(req, res, next) {
     desde.setDate(desde.getDate() - (dias - 1));
     desde.setHours(0, 0, 0, 0);
 
+    // Período anterior de mesmo tamanho, usado só pra calcular a variação % mostrada
+    // nos cards do topo do dashboard (ex: "+12,5% vs 30 dias anteriores").
+    const desdeAnterior = new Date(desde);
+    desdeAnterior.setDate(desdeAnterior.getDate() - dias);
+
     const agora = new Date();
 
     const [
@@ -40,6 +52,8 @@ async function resumo(req, res, next) {
       despesasPeriodo,
       estoquesCaixaAtivo,
       divergenciasCaixaAbertas,
+      vendasPeriodoAnterior,
+      despesasPeriodoAnterior,
     ] = await Promise.all([
       prisma.venda.aggregate({
         where: { status: 'CONFIRMADA', confirmadaEm: { gte: inicioHoje } },
@@ -105,6 +119,17 @@ async function resumo(req, res, next) {
             },
           })
         : Promise.resolve([]),
+      prisma.venda.aggregate({
+        where: { status: 'CONFIRMADA', confirmadaEm: { gte: desdeAnterior, lt: desde } },
+        _sum: { total: true },
+        _count: true,
+      }),
+      ehAdmin
+        ? prisma.contaPagar.aggregate({
+            where: { pago: true, pagoEm: { gte: desdeAnterior, lt: desde } },
+            _sum: { valor: true },
+          })
+        : Promise.resolve({ _sum: { valor: 0 } }),
     ]);
 
     const bandejasPendentes = bandejas.reduce((soma, b) => soma + (b.emprestadas - b.devolvidas), 0);
@@ -253,6 +278,16 @@ async function resumo(req, res, next) {
     const despesasPeriodoTotal = ehAdmin ? despesasPeriodo.reduce((s, c) => s + Number(c.valor), 0) : null;
     const lucroLiquidoPeriodo = ehAdmin ? faturamentoPeriodo - despesasPeriodoTotal : null;
 
+    const faturamentoPeriodoAnterior = Number(vendasPeriodoAnterior._sum.total || 0);
+    const pedidosPeriodoAnterior = vendasPeriodoAnterior._count;
+    const despesasPeriodoAnteriorTotal = ehAdmin ? Number(despesasPeriodoAnterior._sum.valor || 0) : null;
+    const lucroLiquidoPeriodoAnterior = ehAdmin ? faturamentoPeriodoAnterior - despesasPeriodoAnteriorTotal : null;
+
+    const variacaoFaturamentoPct = variacaoPct(faturamentoPeriodo, faturamentoPeriodoAnterior);
+    const variacaoVendasPct = variacaoPct(pedidosPeriodo, pedidosPeriodoAnterior);
+    const variacaoDespesasPct = ehAdmin ? variacaoPct(despesasPeriodoTotal, despesasPeriodoAnteriorTotal) : null;
+    const variacaoLucroPct = ehAdmin ? variacaoPct(lucroLiquidoPeriodo, lucroLiquidoPeriodoAnterior) : null;
+
     const contasComVencimento = contasEmAberto.map((c) => ({
       id: c.id,
       cliente: c.cliente.nome,
@@ -290,6 +325,10 @@ async function resumo(req, res, next) {
       melhorHora,
       despesasPeriodo: despesasPeriodoTotal,
       lucroLiquidoPeriodo,
+      variacaoFaturamentoPct,
+      variacaoVendasPct,
+      variacaoDespesasPct,
+      variacaoLucroPct,
       melhoresProdutosPorCaixa,
       divergenciasCaixa: ehAdmin
         ? divergenciasCaixaAbertas.map((d) => ({
