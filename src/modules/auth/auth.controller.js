@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const prisma = require('../../config/db');
+const cloudinary = require('../../config/cloudinary');
 
 async function login(req, res, next) {
   try {
@@ -20,14 +21,14 @@ async function login(req, res, next) {
     }
 
     const token = jwt.sign(
-      { id: usuario.id, nome: usuario.nome, email: usuario.email, perfil: usuario.perfil, caixaId: usuario.caixaId },
+      { id: usuario.id, nome: usuario.nome, email: usuario.email, perfil: usuario.perfil, caixaId: usuario.caixaId, fotoUrl: usuario.fotoUrl },
       process.env.JWT_SECRET,
       { expiresIn: '12h' }
     );
 
     res.json({
       token,
-      usuario: { id: usuario.id, nome: usuario.nome, email: usuario.email, perfil: usuario.perfil, caixaId: usuario.caixaId },
+      usuario: { id: usuario.id, nome: usuario.nome, email: usuario.email, perfil: usuario.perfil, caixaId: usuario.caixaId, fotoUrl: usuario.fotoUrl },
     });
   } catch (err) {
     next(err);
@@ -89,6 +90,7 @@ async function listarUsuarios(req, res, next) {
         email: true,
         perfil: true,
         ativo: true,
+        fotoUrl: true,
         createdAt: true,
         caixaId: true,
         caixa: { select: { nome: true, unidade: true } },
@@ -105,4 +107,31 @@ async function me(req, res) {
   res.json(req.usuario);
 }
 
-module.exports = { login, criarUsuario, atualizarUsuario, listarUsuarios, me };
+// Foto de perfil é autoatendimento — qualquer perfil logado (admin, vendedor, entregador)
+// troca a própria foto, sem depender de um admin. Mesmo padrão de produtos.enviarImagem:
+// public_id fixo por usuário, então reenviar substitui a foto anterior no Cloudinary.
+async function enviarMinhaFoto(req, res, next) {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Envie um arquivo de imagem' });
+
+    const id = req.usuario.id;
+    const resultado = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { folder: 'ovosbastos/usuarios', public_id: `usuario-${id}`, overwrite: true, resource_type: 'image' },
+        (err, result) => (err ? reject(err) : resolve(result))
+      );
+      stream.end(req.file.buffer);
+    });
+
+    const usuario = await prisma.usuario.update({
+      where: { id },
+      data: { fotoUrl: resultado.secure_url },
+      select: { id: true, nome: true, email: true, perfil: true, caixaId: true, fotoUrl: true },
+    });
+    res.json(usuario);
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { login, criarUsuario, atualizarUsuario, listarUsuarios, me, enviarMinhaFoto };

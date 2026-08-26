@@ -63,6 +63,7 @@ model Usuario {
   senhaHash String
   perfil    Perfil   @default(VENDEDOR)
   ativo     Boolean  @default(true)
+  fotoUrl   String?
   createdAt DateTime @default(now())
 
   caixaId Int?

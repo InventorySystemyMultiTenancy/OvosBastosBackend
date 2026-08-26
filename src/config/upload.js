@@ -16,4 +16,12 @@ const uploadImagemProduto = multer({
   limits: { fileSize: 5 * 1024 * 1024 },
 });
 
-module.exports = { uploadImagemProduto };
+// Mesma configuração — foto de perfil de usuário (qualquer perfil: admin, vendedor,
+// entregador) enviando a própria foto.
+const uploadFotoUsuario = multer({
+  storage: multer.memoryStorage(),
+  fileFilter,
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
+
+module.exports = { uploadImagemProduto, uploadFotoUsuario };
