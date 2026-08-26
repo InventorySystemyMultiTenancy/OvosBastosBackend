@@ -56,11 +56,13 @@ function calcularTotal(itensComPreco, desconto) {
   return Math.max(bruto - Number(desconto || 0), 0);
 }
 
-// Login travado a um caixa (Usuario.caixaId) só pode vender por aquela unidade — mesmo
-// que o corpo da requisição peça outra, isso é barrado aqui (não só escondido no frontend).
-function caixaPermitida(req, caixaId) {
-  if (!req.usuario?.caixaId) return true;
-  return Number(caixaId) === req.usuario.caixaId;
+// Login travado a uma unidade (Usuario.unidade) só pode vender por um caixa daquela
+// unidade — mesmo que o corpo da requisição peça outro, isso é barrado aqui (não só
+// escondido no frontend). Uma unidade pode ter mais de um caixa físico.
+async function caixaPermitida(req, caixaId) {
+  if (!req.usuario?.unidade) return true;
+  const caixa = await prisma.caixa.findUnique({ where: { id: Number(caixaId) }, select: { unidade: true } });
+  return Boolean(caixa) && caixa.unidade === req.usuario.unidade;
 }
 
 async function criar(req, res, next) {
@@ -69,7 +71,7 @@ async function criar(req, res, next) {
     if (!clienteId || !Array.isArray(itens) || itens.length === 0) {
       return res.status(400).json({ error: 'clienteId e ao menos um item são obrigatórios' });
     }
-    if (!caixaPermitida(req, caixaId)) {
+    if (!(await caixaPermitida(req, caixaId))) {
       return res.status(400).json({ error: 'Este login só pode vender pela unidade designada' });
     }
 
@@ -109,7 +111,7 @@ async function checkout(req, res, next) {
     if (!nomeCliente || !nomeCliente.trim()) {
       return res.status(400).json({ error: 'Informe o nome do cliente' });
     }
-    if (!caixaPermitida(req, caixaId)) {
+    if (!(await caixaPermitida(req, caixaId))) {
       return res.status(400).json({ error: 'Este login só pode vender pela unidade designada' });
     }
 

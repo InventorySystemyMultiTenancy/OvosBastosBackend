@@ -66,8 +66,10 @@ model Usuario {
   fotoUrl   String?
   createdAt DateTime @default(now())
 
-  caixaId Int?
-  caixa   Caixa? @relation(fields: [caixaId], references: [id])
+  // Login travado a uma unidade (loja) — não a um caixa específico, já que uma unidade
+  // pode ter mais de um caixa físico. É texto livre casando com Caixa.unidade (mesmo
+  // padrão, sem uma tabela Unidade separada).
+  unidade String?
 
   vendas       Venda[]
   recebimentos Recebimento[]
@@ -280,7 +282,6 @@ model Caixa {
   pagamentosPointMP    PagamentoPointMP[]
   estoque              EstoqueCaixa[]
   movimentacoesEstoque MovimentacaoEstoque[]
-  usuarios             Usuario[]
   sessoes              SessaoCaixa[]
 }
 

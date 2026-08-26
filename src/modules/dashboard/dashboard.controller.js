@@ -410,4 +410,76 @@ async function reposicaoMensal(req, res, next) {
   }
 }
 
-module.exports = { resumo, reposicaoMensal };
+// Detalhe por trás do card "Lucro Líquido" do dashboard — agrupado por unidade (loja),
+// não por caixa: uma unidade pode ter mais de um caixa físico, e o que importa aqui é o
+// desempenho da loja como um todo, dia a dia. Só admin vê (mesma regra do resumo:
+// despesas/lucro são informação financeira sensível).
+async function lucroPorUnidade(req, res, next) {
+  try {
+    const dias = [7, 30, 90].includes(Number(req.query.dias)) ? Number(req.query.dias) : 30;
+
+    const desde = new Date();
+    desde.setDate(desde.getDate() - (dias - 1));
+    desde.setHours(0, 0, 0, 0);
+
+    const [vendasPeriodo, despesasPeriodo] = await Promise.all([
+      prisma.venda.findMany({
+        where: { status: 'CONFIRMADA', confirmadaEm: { gte: desde } },
+        select: { total: true, confirmadaEm: true, caixa: { select: { unidade: true } } },
+      }),
+      prisma.contaPagar.findMany({
+        where: { pago: true, pagoEm: { gte: desde } },
+        select: { valor: true, pagoEm: true, caixa: { select: { unidade: true } } },
+      }),
+    ]);
+
+    const mapaUnidades = {};
+    function unidadeDe(registro) {
+      const unidade = registro.caixa?.unidade || 'Sem unidade';
+      if (!mapaUnidades[unidade]) {
+        mapaUnidades[unidade] = { unidade, faturamento: 0, despesas: 0, pedidos: 0, porDia: {} };
+        for (let i = 0; i < dias; i++) {
+          const d = new Date(desde);
+          d.setDate(d.getDate() + i);
+          mapaUnidades[unidade].porDia[chaveDia(d)] = { data: chaveDia(d), faturamento: 0, despesas: 0, pedidos: 0 };
+        }
+      }
+      return mapaUnidades[unidade];
+    }
+
+    vendasPeriodo.forEach((v) => {
+      const bloco = unidadeDe(v);
+      bloco.faturamento += Number(v.total);
+      bloco.pedidos += 1;
+      const dia = bloco.porDia[chaveDia(v.confirmadaEm)];
+      if (dia) {
+        dia.faturamento += Number(v.total);
+        dia.pedidos += 1;
+      }
+    });
+
+    despesasPeriodo.forEach((c) => {
+      const bloco = unidadeDe(c);
+      bloco.despesas += Number(c.valor);
+      const dia = bloco.porDia[chaveDia(c.pagoEm)];
+      if (dia) dia.despesas += Number(c.valor);
+    });
+
+    const unidades = Object.values(mapaUnidades)
+      .map((u) => ({
+        unidade: u.unidade,
+        faturamento: u.faturamento,
+        despesas: u.despesas,
+        lucro: u.faturamento - u.despesas,
+        pedidos: u.pedidos,
+        porDia: Object.values(u.porDia).map((d) => ({ ...d, lucro: d.faturamento - d.despesas })),
+      }))
+      .sort((a, b) => b.lucro - a.lucro);
+
+    res.json({ periodoDias: dias, unidades });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { resumo, reposicaoMensal, lucroPorUnidade };

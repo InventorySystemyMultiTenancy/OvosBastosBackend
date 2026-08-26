@@ -8,11 +8,12 @@ const INCLUDE_SESSAO = {
   usuarioFechamento: { select: USUARIO_SELECT },
 };
 
-// Login travado a um caixa (Usuario.caixaId) só pode abrir/fechar/consultar aquela unidade —
-// mesmo padrão usado em vendas.controller.caixaPermitida.
-function caixaPermitida(req, caixaId) {
-  if (!req.usuario?.caixaId) return true;
-  return Number(caixaId) === req.usuario.caixaId;
+// Login travado a uma unidade (Usuario.unidade) só pode abrir/fechar/consultar caixas
+// daquela unidade — mesmo padrão usado em vendas.controller.caixaPermitida.
+async function caixaPermitida(req, caixaId) {
+  if (!req.usuario?.unidade) return true;
+  const caixa = await prisma.caixa.findUnique({ where: { id: Number(caixaId) }, select: { unidade: true } });
+  return Boolean(caixa) && caixa.unidade === req.usuario.unidade;
 }
 
 function arredondar(valor) {
@@ -30,7 +31,7 @@ function validarValorContado(valor, campo) {
 async function sessaoAtual(req, res, next) {
   try {
     const caixaId = Number(req.params.id);
-    if (!caixaPermitida(req, caixaId)) {
+    if (!(await caixaPermitida(req, caixaId))) {
       return res.status(403).json({ error: 'Este login só pode acessar a unidade designada' });
     }
 
@@ -60,7 +61,7 @@ async function sessaoAtual(req, res, next) {
 async function abrir(req, res, next) {
   try {
     const caixaId = Number(req.params.id);
-    if (!caixaPermitida(req, caixaId)) {
+    if (!(await caixaPermitida(req, caixaId))) {
       return res.status(403).json({ error: 'Este login só pode abrir a unidade designada' });
     }
 
@@ -113,7 +114,7 @@ async function abrir(req, res, next) {
 async function fechar(req, res, next) {
   try {
     const caixaId = Number(req.params.id);
-    if (!caixaPermitida(req, caixaId)) {
+    if (!(await caixaPermitida(req, caixaId))) {
       return res.status(403).json({ error: 'Este login só pode fechar a unidade designada' });
     }
 
