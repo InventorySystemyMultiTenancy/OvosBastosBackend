@@ -21,7 +21,7 @@ const mercadopagoRoutes = require('./modules/mercadopago/mercadopago.routes');
 
 const app = express();
 
-const defaultOrigins = 'http://localhost:5173,https://ovosbastos.selfmachine.com.br';
+const defaultOrigins = 'http://localhost:5173,https://vrillovos.selfmachine.com.br';
 const allowedOrigins = (process.env.CORS_ORIGIN || defaultOrigins)
   .split(',')
   .map((origin) => origin.trim());
