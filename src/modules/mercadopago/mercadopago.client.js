@@ -54,8 +54,8 @@ function criarPaymentIntent(accessToken, deviceId, { amount, externalReference, 
   });
 }
 
-function obterPaymentIntent(accessToken, deviceId, paymentIntentId) {
-  return mpRequest(accessToken, `/point/integration-api/devices/${deviceId}/payment-intents/${paymentIntentId}`);
+function obterPaymentIntent(accessToken, paymentIntentId) {
+  return mpRequest(accessToken, `/point/integration-api/payment-intents/${paymentIntentId}`);
 }
 
 function cancelarPaymentIntent(accessToken, deviceId, paymentIntentId) {

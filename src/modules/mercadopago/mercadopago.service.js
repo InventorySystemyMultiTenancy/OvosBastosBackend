@@ -169,20 +169,22 @@ async function sincronizarStatus(vendaId) {
   if (!pagamento) throw erro(404, 'Nenhuma cobrança encontrada para esta venda');
 
   const { accessToken } = credenciaisAtivas(pagamento.caixa);
-  const intent = await mpClient.obterPaymentIntent(accessToken, pagamento.deviceId, pagamento.paymentIntentId);
+  const intent = await mpClient.obterPaymentIntent(accessToken, pagamento.paymentIntentId);
 
   return aplicarStatusIntent(pagamento, intent);
 }
 
-// NOTE: confirmar os valores exatos do campo "state" retornado pela Point Integration API
-// na documentação atual do Mercado Pago — mapeamento feito com base no comportamento
-// conhecido (OPEN/ON_TERMINAL/PROCESSING/FINISHED/ERROR/CANCELED) e pode mudar.
+// Mapeamento conforme a doc oficial da Point Integration API (legacy):
+// OPEN = criado mas ainda não enviado/processado; ON_TERMINAL = ativo no device (só cancela
+// no próprio terminal); FINISHED = concluído com sucesso; CONFIRMATION_REQUIRED = status final,
+// requer verificação manual no terminal. ERROR/CANCELED cobrem os demais fins conhecidos.
 function mapearStatus(intentState) {
   const mapa = {
     OPEN: 'PENDENTE',
     ON_TERMINAL: 'EM_PROCESSO',
     PROCESSING: 'EM_PROCESSO',
     FINISHED: 'APROVADO',
+    CONFIRMATION_REQUIRED: 'EM_PROCESSO',
     ERROR: 'REJEITADO',
     CANCELED: 'CANCELADO',
   };
@@ -222,7 +224,7 @@ async function processarWebhook(caixaId, payload) {
   if (!pagamento || pagamento.caixaId !== caixa.id) return;
 
   const accessToken = crypto.decrypt(caixa.mpAccessTokenEnc);
-  const intent = await mpClient.obterPaymentIntent(accessToken, pagamento.deviceId, pagamento.paymentIntentId);
+  const intent = await mpClient.obterPaymentIntent(accessToken, pagamento.paymentIntentId);
   await aplicarStatusIntent(pagamento, intent);
 }
 
