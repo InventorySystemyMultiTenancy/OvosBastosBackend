@@ -36,6 +36,16 @@ async function listarDevices(accessToken) {
   return (data && data.devices) || [];
 }
 
+// A maquininha só recebe payment intents criados pela API se estiver no modo "PDV"; no modo
+// "STANDALONE" (padrão de fábrica / venda avulsa) ela nunca exibe o intent e ele fica parado
+// em OPEN pra sempre. Requer reiniciar o aparelho pra pegar a mudança.
+function definirModoPdv(accessToken, deviceId) {
+  return mpRequest(accessToken, `/point/integration-api/devices/${deviceId}`, {
+    method: 'PATCH',
+    body: { operating_mode: 'PDV' },
+  });
+}
+
 // NOTE: confirmar a unidade de "amount" (centavos vs. valor decimal) e os nomes exatos dos
 // campos aceitos pela Point Integration API na documentação atual do Mercado Pago antes de
 // usar em produção — a API de dispositivos Point é sujeita a mudanças.
@@ -67,6 +77,7 @@ function cancelarPaymentIntent(accessToken, deviceId, paymentIntentId) {
 module.exports = {
   obterUsuario,
   listarDevices,
+  definirModoPdv,
   criarPaymentIntent,
   obterPaymentIntent,
   cancelarPaymentIntent,

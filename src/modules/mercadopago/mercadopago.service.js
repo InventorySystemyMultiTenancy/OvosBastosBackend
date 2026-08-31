@@ -72,6 +72,10 @@ async function associarDevice(caixaId, deviceId) {
   const device = devices.find((d) => d.id === deviceId);
   if (!device) throw erro(400, 'Maquininha não encontrada nesta conta Mercado Pago');
 
+  await mpClient.definirModoPdv(accessToken, deviceId).catch((err) => {
+    console.error(`Falha ao definir modo PDV na maquininha ${deviceId}:`, err.message);
+  });
+
   return prisma.caixa.update({
     where: { id: Number(caixaId) },
     data: { mpDeviceId: deviceId },
@@ -100,18 +104,31 @@ function urlWebhook(caixaId) {
   return base ? `${base}/api/mercadopago/webhook?caixaId=${caixaId}` : undefined;
 }
 
+// Um pagamento marcado PENDENTE/EM_PROCESSO no nosso banco pode estar desatualizado — por
+// exemplo, se o intent foi cancelado direto na maquininha (ON_TERMINAL só cancela no aparelho,
+// nunca pela API) e ainda não chegou webhook. Reconsulta a API antes de confiar no status local.
+async function statusResincronizado(pagamento, accessToken) {
+  const intent = await mpClient.obterPaymentIntent(accessToken, pagamento.paymentIntentId).catch(() => null);
+  if (!intent) return pagamento.status;
+  const atualizado = await aplicarStatusIntent(pagamento, intent);
+  return atualizado.status;
+}
+
 async function enviarCobranca(vendaId) {
   const venda = await prisma.venda.findUnique({ where: { id: Number(vendaId) }, include: { caixa: true } });
   if (!venda) throw erro(404, 'Venda não encontrada');
   if (venda.status !== 'ORCAMENTO') throw erro(400, 'Somente orçamentos podem ser enviados para a maquininha');
   if (!venda.caixa) throw erro(400, 'Venda sem caixa definido');
 
+  const { accessToken, deviceId } = credenciaisAtivas(venda.caixa);
+
   const existente = await prisma.pagamentoPointMP.findUnique({ where: { vendaId: venda.id } });
   if (existente && ['PENDENTE', 'EM_PROCESSO'].includes(existente.status)) {
-    throw erro(409, 'Já existe uma cobrança em aberto para esta venda nesta maquininha');
+    const statusReal = await statusResincronizado(existente, accessToken);
+    if (['PENDENTE', 'EM_PROCESSO'].includes(statusReal)) {
+      throw erro(409, 'Já existe uma cobrança em aberto para esta venda nesta maquininha');
+    }
   }
-
-  const { accessToken, deviceId } = credenciaisAtivas(venda.caixa);
 
   // A maquininha só aceita uma cobrança ativa por vez (erro 2205 da API do Mercado Pago).
   // Se outra venda deixou uma cobrança pendente no mesmo device, avisa antes de tentar criar.
@@ -119,10 +136,13 @@ async function enviarCobranca(vendaId) {
     where: { deviceId, status: { in: ['PENDENTE', 'EM_PROCESSO'] }, vendaId: { not: venda.id } },
   });
   if (outraPendenteNoDevice) {
-    throw erro(
-      409,
-      `Esta maquininha já tem uma cobrança em aberto (venda #${outraPendenteNoDevice.vendaId}). Cancele ou finalize antes de enviar outra.`
-    );
+    const statusReal = await statusResincronizado(outraPendenteNoDevice, accessToken);
+    if (['PENDENTE', 'EM_PROCESSO'].includes(statusReal)) {
+      throw erro(
+        409,
+        `Esta maquininha já tem uma cobrança em aberto (venda #${outraPendenteNoDevice.vendaId}). Cancele ou finalize antes de enviar outra.`
+      );
+    }
   }
 
   // Pagamento dividido: só o que sobra depois do dinheiro já recebido vai pra maquininha.
