@@ -113,6 +113,18 @@ async function enviarCobranca(vendaId) {
 
   const { accessToken, deviceId } = credenciaisAtivas(venda.caixa);
 
+  // A maquininha só aceita uma cobrança ativa por vez (erro 2205 da API do Mercado Pago).
+  // Se outra venda deixou uma cobrança pendente no mesmo device, avisa antes de tentar criar.
+  const outraPendenteNoDevice = await prisma.pagamentoPointMP.findFirst({
+    where: { deviceId, status: { in: ['PENDENTE', 'EM_PROCESSO'] }, vendaId: { not: venda.id } },
+  });
+  if (outraPendenteNoDevice) {
+    throw erro(
+      409,
+      `Esta maquininha já tem uma cobrança em aberto (venda #${outraPendenteNoDevice.vendaId}). Cancele ou finalize antes de enviar outra.`
+    );
+  }
+
   // Pagamento dividido: só o que sobra depois do dinheiro já recebido vai pra maquininha.
   const valorCobranca = Number(venda.total) - Number(venda.valorDinheiro || 0);
 

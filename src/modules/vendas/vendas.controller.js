@@ -172,10 +172,19 @@ async function statusPagamentoMaquininha(req, res, next) {
 async function cancelar(req, res, next) {
   try {
     const id = Number(req.params.id);
-    const venda = await prisma.venda.findUnique({ where: { id } });
+    const venda = await prisma.venda.findUnique({ where: { id }, include: { pagamentoPointMP: true } });
     if (!venda) return res.status(404).json({ error: 'Venda não encontrada' });
     if (venda.status !== 'ORCAMENTO') {
       return res.status(400).json({ error: 'Somente orçamentos podem ser cancelados' });
+    }
+
+    // Cancelar a venda sem liberar a maquininha deixa o device travado com o intent aberto
+    // (erro 2205 do Mercado Pago na próxima cobrança). Se falhar, segue cancelando a venda mesmo
+    // assim e só loga — o usuário pode tentar cancelar a cobrança de novo depois.
+    if (venda.pagamentoPointMP && ['PENDENTE', 'EM_PROCESSO'].includes(venda.pagamentoPointMP.status)) {
+      await mpService.cancelarCobranca(id).catch((err) => {
+        console.error(`Falha ao cancelar cobrança Mercado Pago da venda ${id} ao cancelar a venda:`, err.message);
+      });
     }
 
     const vendaCancelada = await prisma.venda.update({ where: { id }, data: { status: 'CANCELADA' } });
