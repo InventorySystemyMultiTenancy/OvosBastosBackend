@@ -7,7 +7,7 @@ const INCLUDE_PADRAO = {
   cliente: true,
   vendedor: { select: { id: true, nome: true } },
   caixa: { select: { id: true, nome: true, unidade: true, ativo: true } },
-  itens: { include: { produto: true } },
+  itens: { include: { produto: true, embalagem: true } },
   pagamentoPointMP: true,
 };
 
@@ -214,7 +214,7 @@ async function comprovante(req, res, next) {
       cliente: venda.cliente.nome,
       vendedor: venda.vendedor?.nome || 'Loja Online',
       itens: venda.itens.map((i) => ({
-        produto: i.produto.nome,
+        produto: i.embalagem ? `${i.produto.nome} — ${i.embalagem.nome}` : i.produto.nome,
         quantidade: i.quantidade,
         precoUnit: i.precoUnit,
         subtotal: Number(i.precoUnit) * i.quantidade,

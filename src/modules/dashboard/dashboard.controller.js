@@ -10,6 +10,12 @@ function variacaoPct(atual, anterior) {
   return ((atual - anterior) / anterior) * 100;
 }
 
+// Item vendido como embalagem/"caixa" (ver EmbalagemProduto) tem quantidade em número de
+// embalagens, não de bandejas — pra métricas de "quantidade vendida" precisa converter.
+function unidadesVendidas(item) {
+  return item.embalagemId ? item.quantidade * item.bandejasPorEmbalagem : item.quantidade;
+}
+
 function chaveDia(data) {
   const d = new Date(data);
   const ano = d.getFullYear();
@@ -85,6 +91,8 @@ async function resumo(req, res, next) {
           quantidade: true,
           precoUnit: true,
           produtoId: true,
+          embalagemId: true,
+          bandejasPorEmbalagem: true,
           produto: { select: { nome: true, precoCusto: true } },
           venda: { select: { caixaId: true, caixa: { select: { nome: true, unidade: true } } } },
         },
@@ -169,7 +177,7 @@ async function resumo(req, res, next) {
       if (!mapaProdutos[i.produtoId]) {
         mapaProdutos[i.produtoId] = { produtoId: i.produtoId, nome: i.produto.nome, quantidade: 0, receita: 0 };
       }
-      mapaProdutos[i.produtoId].quantidade += i.quantidade;
+      mapaProdutos[i.produtoId].quantidade += unidadesVendidas(i);
       mapaProdutos[i.produtoId].receita += i.quantidade * Number(i.precoUnit);
     });
     const produtosOrdenados = Object.values(mapaProdutos).sort((a, b) => b.receita - a.receita);
@@ -205,7 +213,7 @@ async function resumo(req, res, next) {
           };
         }
         const item = mapaLucroProdutos[i.produtoId];
-        item.quantidade += i.quantidade;
+        item.quantidade += unidadesVendidas(i);
         item.receita += i.quantidade * Number(i.precoUnit);
       });
       lucroPorProduto = Object.values(mapaLucroProdutos)
@@ -243,7 +251,7 @@ async function resumo(req, res, next) {
       if (!produtosDaCaixa[i.produtoId]) {
         produtosDaCaixa[i.produtoId] = { produtoId: i.produtoId, nome: i.produto.nome, quantidade: 0, receita: 0 };
       }
-      produtosDaCaixa[i.produtoId].quantidade += i.quantidade;
+      produtosDaCaixa[i.produtoId].quantidade += unidadesVendidas(i);
       produtosDaCaixa[i.produtoId].receita += i.quantidade * Number(i.precoUnit);
     });
     const melhoresProdutosPorCaixa = Object.values(mapaPorCaixaProduto).map((c) => ({

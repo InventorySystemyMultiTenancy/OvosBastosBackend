@@ -4,7 +4,11 @@ const cloudinary = require('../../config/cloudinary');
 async function listar(req, res, next) {
   try {
     const [produtos, estoques] = await Promise.all([
-      prisma.produto.findMany({ where: { ativo: true }, orderBy: { nome: 'asc' } }),
+      prisma.produto.findMany({
+        where: { ativo: true },
+        orderBy: { nome: 'asc' },
+        include: { embalagens: { where: { ativo: true }, orderBy: { quantidadeBandejas: 'asc' } } },
+      }),
       prisma.estoqueCaixa.findMany({ where: { caixa: { ativo: true } } }),
     ]);
     const mapaDistribuido = {};

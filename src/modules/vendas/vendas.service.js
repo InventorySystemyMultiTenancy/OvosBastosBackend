@@ -5,13 +5,21 @@ const INCLUDE_PADRAO = {
   cliente: true,
   vendedor: { select: { id: true, nome: true } },
   caixa: { select: { id: true, nome: true, unidade: true, ativo: true } },
-  itens: { include: { produto: true } },
+  itens: { include: { produto: true, embalagem: true } },
   pagamentoPointMP: true,
 };
 
 function calcularTotal(itensComPreco, desconto) {
   const bruto = itensComPreco.reduce((soma, i) => soma + i.quantidade * Number(i.precoUnit), 0);
   return Math.max(bruto - Number(desconto || 0), 0);
+}
+
+// Quantidade em bandejas que um item de venda realmente tira do estoque do Produto. Item
+// normal: quantidade já é em bandejas. Item vendido como embalagem (ex: "1 caixa de 30"):
+// quantidade é o número de embalagens, então multiplica pelo tamanho travado na venda —
+// embalagem não tem estoque próprio, desconta sempre do mesmo Produto.quantidade/EstoqueCaixa.
+function bandejasDoItem(item) {
+  return item.embalagemId ? item.quantidade * item.bandejasPorEmbalagem : item.quantidade;
 }
 
 async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaPagamento, vencimento, desconto = 0, valorDinheiro, origemMotivo }) {
@@ -53,6 +61,11 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
     where: { id: { in: itens.map((i) => Number(i.produtoId)) } },
   });
 
+  const embalagemIds = itens.filter((i) => i.embalagemId).map((i) => Number(i.embalagemId));
+  const embalagens = embalagemIds.length
+    ? await prisma.embalagemProduto.findMany({ where: { id: { in: embalagemIds } } })
+    : [];
+
   // Com caixa selecionada, a unidade só pode vender o que tem alocado a ela (EstoqueCaixa).
   // Sem caixa (ex.: catálogo online), continua vendendo do pool central (Produto.quantidade).
   const estoquesCaixa = caixaId
@@ -71,14 +84,32 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
     if (!quantidade || quantidade <= 0) {
       throw Object.assign(new Error(`Quantidade inválida para "${produto.nome}"`), { status: 400 });
     }
+
+    // Item vendido como "caixa" (embalagem fechada, ex: 30 bandejas por R$X): preço é o da
+    // embalagem inteira, e o que desconta do estoque é quantidade × bandejas por embalagem —
+    // a embalagem em si não tem estoque separado, sai sempre do mesmo estoque do produto.
+    let precoUnit = produto.precoVenda;
+    let embalagemId = null;
+    let bandejasPorEmbalagem = null;
+    if (i.embalagemId) {
+      const embalagem = embalagens.find((e) => e.id === Number(i.embalagemId) && e.produtoId === produto.id);
+      if (!embalagem || !embalagem.ativo) {
+        throw Object.assign(new Error(`Caixa de "${produto.nome}" não encontrada`), { status: 400 });
+      }
+      precoUnit = embalagem.preco;
+      embalagemId = embalagem.id;
+      bandejasPorEmbalagem = embalagem.quantidadeBandejas;
+    }
+    const bandejasNecessarias = bandejasPorEmbalagem ? quantidade * bandejasPorEmbalagem : quantidade;
+
     const disponivel = caixaId ? mapaEstoqueCaixa.get(produto.id) || 0 : produto.quantidade;
-    if (disponivel < quantidade) {
+    if (disponivel < bandejasNecessarias) {
       throw Object.assign(
         new Error(`Estoque insuficiente para "${produto.nome}"${caixaId ? ' nesta unidade' : ''}`),
         { status: 400 }
       );
     }
-    return { produtoId: produto.id, quantidade, precoUnit: produto.precoVenda, nome: produto.nome };
+    return { produtoId: produto.id, quantidade, precoUnit, embalagemId, bandejasPorEmbalagem, nome: produto.nome };
   });
 
   const total = calcularTotal(itensComPreco, desconto);
@@ -112,26 +143,35 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
         desconto,
         total,
         confirmadaEm: viaMaquininha ? null : new Date(),
-        itens: { create: itensComPreco.map(({ produtoId, quantidade, precoUnit }) => ({ produtoId, quantidade, precoUnit })) },
+        itens: {
+          create: itensComPreco.map(({ produtoId, quantidade, precoUnit, embalagemId, bandejasPorEmbalagem }) => ({
+            produtoId,
+            quantidade,
+            precoUnit,
+            embalagemId,
+            bandejasPorEmbalagem,
+          })),
+        },
       },
     });
 
     if (!viaMaquininha) {
       for (const item of itensComPreco) {
+        const bandejas = bandejasDoItem(item);
         if (caixaId) {
           await tx.estoqueCaixa.update({
             where: { produtoId_caixaId: { produtoId: item.produtoId, caixaId: Number(caixaId) } },
-            data: { quantidade: { decrement: item.quantidade } },
+            data: { quantidade: { decrement: bandejas } },
           });
         } else {
-          await tx.produto.update({ where: { id: item.produtoId }, data: { quantidade: { decrement: item.quantidade } } });
+          await tx.produto.update({ where: { id: item.produtoId }, data: { quantidade: { decrement: bandejas } } });
         }
         await tx.movimentacaoEstoque.create({
           data: {
             produtoId: item.produtoId,
             caixaId: caixaId ? Number(caixaId) : null,
             tipo: 'SAIDA',
-            quantidade: item.quantidade,
+            quantidade: bandejas,
             motivo: origemMotivo ? `${origemMotivo} #${novaVenda.id}` : `Venda #${novaVenda.id}`,
           },
         });
@@ -183,7 +223,7 @@ async function confirmarVenda(vendaId, { formaPagamento, vencimento }) {
           })
         )?.quantidade || 0
       : produto.quantidade;
-    if (disponivel < item.quantidade) {
+    if (disponivel < bandejasDoItem(item)) {
       throw Object.assign(
         new Error(`Estoque insuficiente para o produto "${produto.nome}"${venda.caixaId ? ' nesta unidade' : ''}`),
         { status: 400 }
@@ -208,23 +248,26 @@ async function confirmarVenda(vendaId, { formaPagamento, vencimento }) {
       where: { id },
       data: { status: 'CONFIRMADA', formaPagamento, confirmadaEm: new Date() },
     }),
-    ...venda.itens.flatMap((item) => [
-      venda.caixaId
-        ? prisma.estoqueCaixa.update({
-            where: { produtoId_caixaId: { produtoId: item.produtoId, caixaId: venda.caixaId } },
-            data: { quantidade: { decrement: item.quantidade } },
-          })
-        : prisma.produto.update({ where: { id: item.produtoId }, data: { quantidade: { decrement: item.quantidade } } }),
-      prisma.movimentacaoEstoque.create({
-        data: {
-          produtoId: item.produtoId,
-          caixaId: venda.caixaId || null,
-          tipo: 'SAIDA',
-          quantidade: item.quantidade,
-          motivo: `Venda #${id}`,
-        },
-      }),
-    ]),
+    ...venda.itens.flatMap((item) => {
+      const bandejas = bandejasDoItem(item);
+      return [
+        venda.caixaId
+          ? prisma.estoqueCaixa.update({
+              where: { produtoId_caixaId: { produtoId: item.produtoId, caixaId: venda.caixaId } },
+              data: { quantidade: { decrement: bandejas } },
+            })
+          : prisma.produto.update({ where: { id: item.produtoId }, data: { quantidade: { decrement: bandejas } } }),
+        prisma.movimentacaoEstoque.create({
+          data: {
+            produtoId: item.produtoId,
+            caixaId: venda.caixaId || null,
+            tipo: 'SAIDA',
+            quantidade: bandejas,
+            motivo: `Venda #${id}`,
+          },
+        }),
+      ];
+    }),
   ];
 
   if (formaPagamento === 'FIADO') {
@@ -269,24 +312,27 @@ async function reabrirVenda(vendaId) {
   }
 
   const operacoes = [
-    ...venda.itens.flatMap((item) => [
-      venda.caixaId
-        ? prisma.estoqueCaixa.upsert({
-            where: { produtoId_caixaId: { produtoId: item.produtoId, caixaId: venda.caixaId } },
-            create: { produtoId: item.produtoId, caixaId: venda.caixaId, quantidade: item.quantidade },
-            update: { quantidade: { increment: item.quantidade } },
-          })
-        : prisma.produto.update({ where: { id: item.produtoId }, data: { quantidade: { increment: item.quantidade } } }),
-      prisma.movimentacaoEstoque.create({
-        data: {
-          produtoId: item.produtoId,
-          caixaId: venda.caixaId || null,
-          tipo: 'ENTRADA',
-          quantidade: item.quantidade,
-          motivo: `Reabertura venda #${id}`,
-        },
-      }),
-    ]),
+    ...venda.itens.flatMap((item) => {
+      const bandejas = bandejasDoItem(item);
+      return [
+        venda.caixaId
+          ? prisma.estoqueCaixa.upsert({
+              where: { produtoId_caixaId: { produtoId: item.produtoId, caixaId: venda.caixaId } },
+              create: { produtoId: item.produtoId, caixaId: venda.caixaId, quantidade: bandejas },
+              update: { quantidade: { increment: bandejas } },
+            })
+          : prisma.produto.update({ where: { id: item.produtoId }, data: { quantidade: { increment: bandejas } } }),
+        prisma.movimentacaoEstoque.create({
+          data: {
+            produtoId: item.produtoId,
+            caixaId: venda.caixaId || null,
+            tipo: 'ENTRADA',
+            quantidade: bandejas,
+            motivo: `Reabertura venda #${id}`,
+          },
+        }),
+      ];
+    }),
     prisma.venda.update({
       where: { id },
       data: { status: 'ORCAMENTO', formaPagamento: null, valorDinheiro: null, confirmadaEm: null },
