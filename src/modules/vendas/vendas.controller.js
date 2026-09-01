@@ -1,6 +1,6 @@
 const prisma = require('../../config/db');
 const { encontrarOuCriarClientePorNome } = require('../clientes/clientes.service');
-const { processarCheckout, confirmarVenda } = require('./vendas.service');
+const { processarCheckout, confirmarVenda, reabrirVenda } = require('./vendas.service');
 const mpService = require('../mercadopago/mercadopago.service');
 
 const INCLUDE_PADRAO = {
@@ -194,6 +194,15 @@ async function cancelar(req, res, next) {
   }
 }
 
+async function reabrir(req, res, next) {
+  try {
+    const venda = await reabrirVenda(req.params.id);
+    res.json(venda);
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function comprovante(req, res, next) {
   try {
     const venda = await prisma.venda.findUnique({ where: { id: Number(req.params.id) }, include: INCLUDE_PADRAO });
@@ -228,6 +237,7 @@ module.exports = {
   checkout,
   confirmar,
   cancelar,
+  reabrir,
   comprovante,
   pagarMaquininha,
   cancelarPagamentoMaquininha,

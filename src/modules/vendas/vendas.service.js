@@ -246,4 +246,60 @@ async function confirmarVenda(vendaId, { formaPagamento, vencimento }) {
   return prisma.venda.findUnique({ where: { id }, include: INCLUDE_PADRAO });
 }
 
-module.exports = { INCLUDE_PADRAO, calcularTotal, processarCheckout, confirmarVenda };
+// Desfaz uma venda já CONFIRMADA: devolve o estoque baixado (pro EstoqueCaixa da unidade,
+// ou pro pool central se a venda não tinha caixa), apaga a conta a receber se era fiado
+// ainda não pago, e volta a venda pra ORCAMENTO sem forma de pagamento — a partir daí ela
+// reaparece na lista com os mesmos botões "Confirmar"/"Cancelar" de qualquer orçamento, então
+// tanto "reabrir pra trocar a forma de pagamento" quanto "apagar a venda" usam esse mesmo
+// caminho (reabrir e, se for o caso, cancelar o orçamento resultante).
+async function reabrirVenda(vendaId) {
+  const id = Number(vendaId);
+  const venda = await prisma.venda.findUnique({ where: { id }, include: { itens: true, contaReceber: true } });
+  if (!venda) {
+    throw Object.assign(new Error('Venda não encontrada'), { status: 404 });
+  }
+  if (venda.status !== 'CONFIRMADA') {
+    throw Object.assign(new Error('Somente vendas confirmadas podem ser reabertas'), { status: 400 });
+  }
+  if (venda.contaReceber && venda.contaReceber.pago) {
+    throw Object.assign(
+      new Error('Esta venda tem uma conta a receber (fiado) já paga — estorne o pagamento no Financeiro antes de reabrir'),
+      { status: 400 }
+    );
+  }
+
+  const operacoes = [
+    ...venda.itens.flatMap((item) => [
+      venda.caixaId
+        ? prisma.estoqueCaixa.upsert({
+            where: { produtoId_caixaId: { produtoId: item.produtoId, caixaId: venda.caixaId } },
+            create: { produtoId: item.produtoId, caixaId: venda.caixaId, quantidade: item.quantidade },
+            update: { quantidade: { increment: item.quantidade } },
+          })
+        : prisma.produto.update({ where: { id: item.produtoId }, data: { quantidade: { increment: item.quantidade } } }),
+      prisma.movimentacaoEstoque.create({
+        data: {
+          produtoId: item.produtoId,
+          caixaId: venda.caixaId || null,
+          tipo: 'ENTRADA',
+          quantidade: item.quantidade,
+          motivo: `Reabertura venda #${id}`,
+        },
+      }),
+    ]),
+    prisma.venda.update({
+      where: { id },
+      data: { status: 'ORCAMENTO', formaPagamento: null, valorDinheiro: null, confirmadaEm: null },
+    }),
+  ];
+
+  if (venda.contaReceber) {
+    operacoes.push(prisma.contaReceber.delete({ where: { id: venda.contaReceber.id } }));
+  }
+
+  await prisma.$transaction(operacoes);
+
+  return prisma.venda.findUnique({ where: { id }, include: INCLUDE_PADRAO });
+}
+
+module.exports = { INCLUDE_PADRAO, calcularTotal, processarCheckout, confirmarVenda, reabrirVenda };
