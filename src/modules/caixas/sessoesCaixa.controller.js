@@ -28,6 +28,23 @@ function validarValorContado(valor, campo) {
   return arredondar(numero);
 }
 
+// Quanto entrou em dinheiro físico no caixa desde a abertura da sessão — venda em DINHEIRO
+// conta o total, venda na maquininha com parte em dinheiro (pagamento dividido) conta só
+// essa parte. Mesmo cálculo de financeiro.controller.vendasHojePorForma.
+async function totalVendasDinheiroSessao(caixaId, desde) {
+  const vendas = await prisma.venda.findMany({
+    where: { caixaId, status: 'CONFIRMADA', confirmadaEm: { gte: desde } },
+    select: { total: true, formaPagamento: true, valorDinheiro: true },
+  });
+  const soma = vendas.reduce((acc, v) => {
+    const dinheiro = Number(v.valorDinheiro || 0);
+    if (dinheiro > 0) return acc + dinheiro;
+    if (v.formaPagamento === 'DINHEIRO') return acc + Number(v.total);
+    return acc;
+  }, 0);
+  return arredondar(soma);
+}
+
 async function sessaoAtual(req, res, next) {
   try {
     const caixaId = Number(req.params.id);
@@ -52,7 +69,11 @@ async function sessaoAtual(req, res, next) {
         ? { fechadaEm: ultimoFechamento.fechadaEm, usuarioFechamento: ultimoFechamento.usuarioFechamento }
         : ultimoFechamento;
 
-    res.json({ sessaoAberta, ultimoFechamento: ultimoFechamentoResposta });
+    // Fundo de caixa (valorAbertura) + vendido em dinheiro desde a abertura = quanto deveria
+    // ter fisicamente no caixa agora — usado pro total ao lado do nome do caixa e no fechamento.
+    const vendasDinheiroSessao = sessaoAberta ? await totalVendasDinheiroSessao(caixaId, sessaoAberta.abertaEm) : null;
+
+    res.json({ sessaoAberta, ultimoFechamento: ultimoFechamentoResposta, vendasDinheiroSessao });
   } catch (err) {
     next(err);
   }

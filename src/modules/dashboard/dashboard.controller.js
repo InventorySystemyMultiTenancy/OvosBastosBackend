@@ -85,7 +85,7 @@ async function resumo(req, res, next) {
           quantidade: true,
           precoUnit: true,
           produtoId: true,
-          produto: { select: { nome: true } },
+          produto: { select: { nome: true, precoCusto: true } },
           venda: { select: { caixaId: true, caixa: { select: { nome: true, unidade: true } } } },
         },
       }),
@@ -187,6 +187,45 @@ async function resumo(req, res, next) {
             },
           ]
         : top7;
+
+    // Lucro por produto — venda menos custo cadastrado (Produto.precoCusto). Informação
+    // financeira sensível, só pra admin (mesma regra de despesas/lucro líquido acima).
+    // Produtos sem custo cadastrado entram com precoCusto/lucro null em vez de assumir 0.
+    let lucroPorProduto = [];
+    if (ehAdmin) {
+      const mapaLucroProdutos = {};
+      itensPeriodo.forEach((i) => {
+        if (!mapaLucroProdutos[i.produtoId]) {
+          mapaLucroProdutos[i.produtoId] = {
+            produtoId: i.produtoId,
+            nome: i.produto.nome,
+            precoCusto: i.produto.precoCusto !== null ? Number(i.produto.precoCusto) : null,
+            quantidade: 0,
+            receita: 0,
+          };
+        }
+        const item = mapaLucroProdutos[i.produtoId];
+        item.quantidade += i.quantidade;
+        item.receita += i.quantidade * Number(i.precoUnit);
+      });
+      lucroPorProduto = Object.values(mapaLucroProdutos)
+        .map((p) => {
+          const precoVendaMedio = p.quantidade > 0 ? p.receita / p.quantidade : 0;
+          const custoTotal = p.precoCusto !== null ? p.precoCusto * p.quantidade : null;
+          return {
+            produtoId: p.produtoId,
+            nome: p.nome,
+            quantidade: p.quantidade,
+            precoVenda: precoVendaMedio,
+            precoCusto: p.precoCusto,
+            lucroUnitario: p.precoCusto !== null ? precoVendaMedio - p.precoCusto : null,
+            receita: p.receita,
+            custoTotal,
+            lucroTotal: custoTotal !== null ? p.receita - custoTotal : null,
+          };
+        })
+        .sort((a, b) => (b.lucroTotal ?? -Infinity) - (a.lucroTotal ?? -Infinity));
+    }
 
     // Produto mais vendido por unidade — mesmo agrupamento de itensPeriodo, só que por caixa.
     const mapaPorCaixaProduto = {};
@@ -330,6 +369,7 @@ async function resumo(req, res, next) {
       variacaoDespesasPct,
       variacaoLucroPct,
       melhoresProdutosPorCaixa,
+      lucroPorProduto,
       divergenciasCaixa: ehAdmin
         ? divergenciasCaixaAbertas.map((d) => ({
             id: d.id,
@@ -482,4 +522,44 @@ async function lucroPorUnidade(req, res, next) {
   }
 }
 
-module.exports = { resumo, reposicaoMensal, lucroPorUnidade };
+// Quanto de cada produto está distribuído em cada unidade agora ("o que sobrou" depois de
+// vendas e distribuições até aqui) — botão no topo do dashboard, mesma info da matriz de
+// estoque por caixa, só que somada por unidade (uma unidade pode ter mais de um caixa).
+async function estoquePorUnidade(req, res, next) {
+  try {
+    const estoques = await prisma.estoqueCaixa.findMany({
+      where: { caixa: { ativo: true } },
+      select: {
+        quantidade: true,
+        produto: { select: { id: true, nome: true } },
+        caixa: { select: { unidade: true } },
+      },
+    });
+
+    const mapaUnidades = {};
+    estoques.forEach((e) => {
+      const unidade = e.caixa.unidade;
+      if (!mapaUnidades[unidade]) mapaUnidades[unidade] = { unidade, total: 0, produtos: {} };
+      const bloco = mapaUnidades[unidade];
+      if (!bloco.produtos[e.produto.id]) {
+        bloco.produtos[e.produto.id] = { produtoId: e.produto.id, nome: e.produto.nome, quantidade: 0 };
+      }
+      bloco.produtos[e.produto.id].quantidade += e.quantidade;
+      bloco.total += e.quantidade;
+    });
+
+    const unidades = Object.values(mapaUnidades)
+      .map((u) => ({
+        unidade: u.unidade,
+        total: u.total,
+        produtos: Object.values(u.produtos).sort((a, b) => b.quantidade - a.quantidade),
+      }))
+      .sort((a, b) => a.unidade.localeCompare(b.unidade, 'pt-BR'));
+
+    res.json({ unidades });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { resumo, reposicaoMensal, lucroPorUnidade, estoquePorUnidade };

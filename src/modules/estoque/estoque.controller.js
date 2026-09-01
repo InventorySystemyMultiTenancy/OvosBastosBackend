@@ -26,17 +26,26 @@ async function entrada(req, res, next) {
   }
 }
 
+// Saída do pool central é sempre uma distribuição para uma unidade — não existe mais
+// "saída sem destino". Do ponto de vista da unidade é uma ENTRADA em EstoqueCaixa, mesmo
+// padrão já usado em recebimentos.service.js:distribuir(); a diferença é que aqui não
+// depende de um Recebimento em andamento, então pode ser repetida quantas vezes o admin
+// quiser pra redistribuir o pool não distribuído entre as unidades.
 async function saida(req, res, next) {
   try {
-    const { produtoId, quantidade, motivo } = req.body;
-    if (!produtoId || !quantidade || quantidade <= 0) {
-      return res.status(400).json({ error: 'produtoId e quantidade (> 0) são obrigatórios' });
+    const { produtoId, caixaId, quantidade, motivo } = req.body;
+    if (!produtoId || !caixaId || !quantidade || quantidade <= 0) {
+      return res.status(400).json({ error: 'produtoId, caixaId e quantidade (> 0) são obrigatórios' });
     }
 
-    const produtoAtual = await prisma.produto.findUnique({ where: { id: Number(produtoId) } });
+    const [produtoAtual, caixa] = await Promise.all([
+      prisma.produto.findUnique({ where: { id: Number(produtoId) } }),
+      prisma.caixa.findUnique({ where: { id: Number(caixaId) } }),
+    ]);
     if (!produtoAtual) return res.status(404).json({ error: 'Produto não encontrado' });
+    if (!caixa || !caixa.ativo) return res.status(404).json({ error: 'Unidade não encontrada ou inativa' });
     if (produtoAtual.quantidade < Number(quantidade)) {
-      return res.status(400).json({ error: 'Estoque insuficiente para essa saída' });
+      return res.status(400).json({ error: 'Estoque não distribuído insuficiente para essa saída' });
     }
 
     const [produto] = await prisma.$transaction([
@@ -44,8 +53,19 @@ async function saida(req, res, next) {
         where: { id: Number(produtoId) },
         data: { quantidade: { decrement: Number(quantidade) } },
       }),
+      prisma.estoqueCaixa.upsert({
+        where: { produtoId_caixaId: { produtoId: Number(produtoId), caixaId: Number(caixaId) } },
+        create: { produtoId: Number(produtoId), caixaId: Number(caixaId), quantidade: Number(quantidade) },
+        update: { quantidade: { increment: Number(quantidade) } },
+      }),
       prisma.movimentacaoEstoque.create({
-        data: { produtoId: Number(produtoId), tipo: 'SAIDA', quantidade: Number(quantidade), motivo },
+        data: {
+          produtoId: Number(produtoId),
+          caixaId: Number(caixaId),
+          tipo: 'ENTRADA',
+          quantidade: Number(quantidade),
+          motivo: motivo || `Distribuição manual para ${caixa.nome}`,
+        },
       }),
     ]);
 
