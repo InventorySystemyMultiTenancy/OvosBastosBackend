@@ -20,7 +20,7 @@ function chaveDia(data) {
 
 async function resumo(req, res, next) {
   try {
-    const dias = [7, 30, 90].includes(Number(req.query.dias)) ? Number(req.query.dias) : 30;
+    const dias = [1, 7, 30, 90].includes(Number(req.query.dias)) ? Number(req.query.dias) : 30;
     const ehAdmin = req.usuario?.perfil === 'ADMIN';
 
     const inicioHoje = new Date();
@@ -456,7 +456,7 @@ async function reposicaoMensal(req, res, next) {
 // despesas/lucro são informação financeira sensível).
 async function lucroPorUnidade(req, res, next) {
   try {
-    const dias = [7, 30, 90].includes(Number(req.query.dias)) ? Number(req.query.dias) : 30;
+    const dias = [1, 7, 30, 90].includes(Number(req.query.dias)) ? Number(req.query.dias) : 30;
 
     const desde = new Date();
     desde.setDate(desde.getDate() - (dias - 1));
