@@ -273,6 +273,9 @@ model Venda {
   // em dinheiro — o restante (total - valorDinheiro) é o que vai pra maquininha (CARTAO).
   valorDinheiro  Decimal?        @db.Decimal(12, 2)
   desconto       Decimal         @default(0) @db.Decimal(12, 2)
+  // Oposto do desconto — soma ao total em vez de subtrair (ex: taxa de entrega, embalagem
+  // especial cobrada à parte). total = subtotal dos itens - desconto + acrescimo.
+  acrescimo      Decimal         @default(0) @db.Decimal(12, 2)
   total          Decimal         @default(0) @db.Decimal(12, 2)
   createdAt      DateTime        @default(now())
   confirmadaEm   DateTime?

@@ -33,7 +33,7 @@ async function configurarToken(caixaId, accessToken) {
     throw erro(409, `Esta conta Mercado Pago já está associada ao caixa "${contaJaUsada.nome}"`);
   }
 
-  const devices = await mpClient.listarDevices(tokenLimpo).catch(() => []);
+  const devices = await mpClient.listarTerminais(tokenLimpo).catch(() => []);
 
   await prisma.caixa.update({
     where: { id: Number(caixaId) },
@@ -52,7 +52,7 @@ async function listarDevicesDoCaixa(caixaId) {
   const caixa = await buscarCaixaOuFalhar(caixaId);
   if (!caixa.mpAccessTokenEnc) throw erro(400, 'Caixa sem Access Token do Mercado Pago configurado');
   const accessToken = crypto.decrypt(caixa.mpAccessTokenEnc);
-  return mpClient.listarDevices(accessToken);
+  return mpClient.listarTerminais(accessToken);
 }
 
 async function associarDevice(caixaId, deviceId) {
@@ -68,7 +68,7 @@ async function associarDevice(caixaId, deviceId) {
   }
 
   const accessToken = crypto.decrypt(caixa.mpAccessTokenEnc);
-  const devices = await mpClient.listarDevices(accessToken);
+  const devices = await mpClient.listarTerminais(accessToken);
   const device = devices.find((d) => d.id === deviceId);
   if (!device) throw erro(400, 'Maquininha não encontrada nesta conta Mercado Pago');
 
@@ -99,18 +99,13 @@ function credenciaisAtivas(caixa) {
   return { accessToken: crypto.decrypt(caixa.mpAccessTokenEnc), deviceId: caixa.mpDeviceId };
 }
 
-function urlWebhook(caixaId) {
-  const base = (process.env.APP_BASE_URL || '').replace(/\/$/, '');
-  return base ? `${base}/api/mercadopago/webhook?caixaId=${caixaId}` : undefined;
-}
-
 // Um pagamento marcado PENDENTE/EM_PROCESSO no nosso banco pode estar desatualizado — por
-// exemplo, se o intent foi cancelado direto na maquininha (ON_TERMINAL só cancela no aparelho,
+// exemplo, se a order foi cancelada direto na maquininha (at_terminal só cancela no aparelho,
 // nunca pela API) e ainda não chegou webhook. Reconsulta a API antes de confiar no status local.
 async function statusResincronizado(pagamento, accessToken) {
-  const intent = await mpClient.obterPaymentIntent(accessToken, pagamento.paymentIntentId).catch(() => null);
-  if (!intent) return pagamento.status;
-  const atualizado = await aplicarStatusIntent(pagamento, intent);
+  const order = await mpClient.obterOrder(accessToken, pagamento.paymentIntentId).catch(() => null);
+  if (!order) return pagamento.status;
+  const atualizado = await aplicarStatusIntent(pagamento, order);
   return atualizado.status;
 }
 
@@ -148,11 +143,11 @@ async function enviarCobranca(vendaId) {
   // Pagamento dividido: só o que sobra depois do dinheiro já recebido vai pra maquininha.
   const valorCobranca = Number(venda.total) - Number(venda.valorDinheiro || 0);
 
-  const intent = await mpClient.criarPaymentIntent(accessToken, deviceId, {
-    amount: Math.round(valorCobranca * 100),
+  const order = await mpClient.criarOrder(accessToken, {
+    terminalId: deviceId,
+    amount: valorCobranca.toFixed(2),
     externalReference: `venda-${venda.id}`,
     description: `Venda #${venda.id}`,
-    notificationUrl: urlWebhook(venda.caixaId),
   });
 
   return prisma.pagamentoPointMP.upsert({
@@ -161,17 +156,17 @@ async function enviarCobranca(vendaId) {
       vendaId: venda.id,
       caixaId: venda.caixaId,
       deviceId,
-      paymentIntentId: intent.id,
+      paymentIntentId: order.id,
       status: 'PENDENTE',
       valor: valorCobranca,
-      detalhes: intent,
+      detalhes: order,
     },
     update: {
       deviceId,
-      paymentIntentId: intent.id,
+      paymentIntentId: order.id,
       status: 'PENDENTE',
       valor: valorCobranca,
-      detalhes: intent,
+      detalhes: order,
     },
   });
 }
@@ -185,7 +180,7 @@ async function cancelarCobranca(vendaId) {
 
   const { accessToken } = credenciaisAtivas(pagamento.caixa);
   try {
-    await mpClient.cancelarPaymentIntent(accessToken, pagamento.deviceId, pagamento.paymentIntentId);
+    await mpClient.cancelarOrder(accessToken, pagamento.paymentIntentId, { atTerminal: pagamento.status === 'EM_PROCESSO' });
   } catch (err) {
     if (err.mpStatus !== 404) throw err;
   }
@@ -201,34 +196,38 @@ async function sincronizarStatus(vendaId) {
   if (!pagamento) throw erro(404, 'Nenhuma cobrança encontrada para esta venda');
 
   const { accessToken } = credenciaisAtivas(pagamento.caixa);
-  const intent = await mpClient.obterPaymentIntent(accessToken, pagamento.paymentIntentId);
+  const order = await mpClient.obterOrder(accessToken, pagamento.paymentIntentId);
 
-  return aplicarStatusIntent(pagamento, intent);
+  return aplicarStatusIntent(pagamento, order);
 }
 
-// Mapeamento conforme a doc oficial da Point Integration API (legacy):
-// OPEN = criado mas ainda não enviado/processado; ON_TERMINAL = ativo no device (só cancela
-// no próprio terminal); FINISHED = concluído com sucesso; CONFIRMATION_REQUIRED = status final,
-// requer verificação manual no terminal. ERROR/CANCELED cobrem os demais fins conhecidos.
-function mapearStatus(intentState) {
+// Mapeamento conforme a doc oficial da API de Orders (developers.mercadopago.com/pt/docs/
+// mp-point/migrate-payment-intent-to-orders): created = criada, ainda não enviada ao
+// terminal; at_terminal = ativa no aparelho (só cancela no próprio terminal);
+// action_required = precisa de alguma ação extra (ex: confirmação manual); processed/failed
+// já vêm "fechados" (sucesso/recusa definitivos, sem precisar consultar mais nada);
+// expired/canceled cobrem os fins por tempo esgotado ou cancelamento. "refunded" (estorno)
+// não tem fluxo próprio aqui ainda — mantém como aprovado, já que a venda já foi confirmada.
+function mapearStatus(orderStatus) {
   const mapa = {
-    OPEN: 'PENDENTE',
-    ON_TERMINAL: 'EM_PROCESSO',
-    PROCESSING: 'EM_PROCESSO',
-    FINISHED: 'APROVADO',
-    CONFIRMATION_REQUIRED: 'EM_PROCESSO',
-    ERROR: 'REJEITADO',
-    CANCELED: 'CANCELADO',
+    created: 'PENDENTE',
+    at_terminal: 'EM_PROCESSO',
+    action_required: 'EM_PROCESSO',
+    processed: 'APROVADO',
+    refunded: 'APROVADO',
+    failed: 'REJEITADO',
+    expired: 'CANCELADO',
+    canceled: 'CANCELADO',
   };
-  return mapa[intentState] || 'EM_PROCESSO';
+  return mapa[orderStatus] || 'EM_PROCESSO';
 }
 
-async function aplicarStatusIntent(pagamento, intent) {
-  const novoStatus = mapearStatus(intent.state);
+async function aplicarStatusIntent(pagamento, order) {
+  const novoStatus = mapearStatus(order.status);
 
   const atualizado = await prisma.pagamentoPointMP.update({
     where: { id: pagamento.id },
-    data: { status: novoStatus, detalhes: intent },
+    data: { status: novoStatus, detalhes: order },
   });
 
   if (novoStatus === 'APROVADO' && pagamento.status !== 'APROVADO') {
@@ -241,23 +240,22 @@ async function aplicarStatusIntent(pagamento, intent) {
   return atualizado;
 }
 
-// O caixaId vem da query string que nós mesmos definimos em notification_url ao criar o
-// payment intent — por isso a notificação só serve de gatilho: o status real é sempre
-// buscado de volta na API do Mercado Pago com o token daquele caixa (nunca confiamos no
-// corpo da notificação para decidir se um pagamento foi aprovado).
-async function processarWebhook(caixaId, payload) {
-  const caixa = await prisma.caixa.findUnique({ where: { id: Number(caixaId) } });
-  if (!caixa || !caixa.mpAccessTokenEnc) return;
+// A API de Orders não aceita mais notification_url por requisição (só assinatura de webhook
+// por aplicação, tópico "orders", configurada uma vez no painel do Mercado Pago) — então a
+// notificação não carrega mais o caixaId na URL. Em vez disso, acha o pagamento pelo id da
+// order (que já é único e foi salvo na criação) e usa o caixaId que já estava gravado nele
+// pra saber com qual token da conta consultar de volta — nunca confiamos no corpo da
+// notificação pra decidir se um pagamento foi aprovado, só como gatilho pra reconsultar.
+async function processarWebhook(payload) {
+  const orderId = (payload && (payload.id || (payload.data && payload.data.id))) || undefined;
+  if (!orderId) return;
 
-  const paymentIntentId = (payload && (payload.id || (payload.data && payload.data.id))) || undefined;
-  if (!paymentIntentId) return;
+  const pagamento = await prisma.pagamentoPointMP.findUnique({ where: { paymentIntentId: orderId }, include: { caixa: true } });
+  if (!pagamento || !pagamento.caixa?.mpAccessTokenEnc) return;
 
-  const pagamento = await prisma.pagamentoPointMP.findUnique({ where: { paymentIntentId } });
-  if (!pagamento || pagamento.caixaId !== caixa.id) return;
-
-  const accessToken = crypto.decrypt(caixa.mpAccessTokenEnc);
-  const intent = await mpClient.obterPaymentIntent(accessToken, pagamento.paymentIntentId);
-  await aplicarStatusIntent(pagamento, intent);
+  const accessToken = crypto.decrypt(pagamento.caixa.mpAccessTokenEnc);
+  const order = await mpClient.obterOrder(accessToken, pagamento.paymentIntentId);
+  await aplicarStatusIntent(pagamento, order);
 }
 
 module.exports = {

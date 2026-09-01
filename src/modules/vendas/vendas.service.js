@@ -9,9 +9,9 @@ const INCLUDE_PADRAO = {
   pagamentoPointMP: true,
 };
 
-function calcularTotal(itensComPreco, desconto) {
+function calcularTotal(itensComPreco, desconto, acrescimo = 0) {
   const bruto = itensComPreco.reduce((soma, i) => soma + i.quantidade * Number(i.precoUnit), 0);
-  return Math.max(bruto - Number(desconto || 0), 0);
+  return Math.max(bruto - Number(desconto || 0) + Number(acrescimo || 0), 0);
 }
 
 // Quantidade em bandejas que um item de venda realmente tira do estoque do Produto. Item
@@ -22,7 +22,7 @@ function bandejasDoItem(item) {
   return item.embalagemId ? item.quantidade * item.bandejasPorEmbalagem : item.quantidade;
 }
 
-async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaPagamento, vencimento, desconto = 0, valorDinheiro, origemMotivo }) {
+async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaPagamento, vencimento, desconto = 0, acrescimo = 0, valorDinheiro, origemMotivo }) {
   if (!clienteId || !Array.isArray(itens) || itens.length === 0) {
     throw Object.assign(new Error('clienteId e ao menos um item são obrigatórios'), { status: 400 });
   }
@@ -112,7 +112,7 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
     return { produtoId: produto.id, quantidade, precoUnit, embalagemId, bandejasPorEmbalagem, nome: produto.nome };
   });
 
-  const total = calcularTotal(itensComPreco, desconto);
+  const total = calcularTotal(itensComPreco, desconto, acrescimo);
 
   if (valorDinheiroNum !== null && valorDinheiroNum >= total) {
     throw Object.assign(new Error('valorDinheiro deve ser menor que o total (o restante vai pra maquininha)'), { status: 400 });
@@ -141,6 +141,7 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
         formaPagamento: viaMaquininha ? null : formaPagamento,
         valorDinheiro: valorDinheiroNum,
         desconto,
+        acrescimo,
         total,
         confirmadaEm: viaMaquininha ? null : new Date(),
         itens: {

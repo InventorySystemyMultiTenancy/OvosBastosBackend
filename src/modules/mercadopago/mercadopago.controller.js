@@ -39,13 +39,13 @@ async function remover(req, res, next) {
 }
 
 // Sempre responde 200 para o Mercado Pago não ficar reenviando a notificação em loop;
-// qualquer erro de processamento fica só no log do servidor.
+// qualquer erro de processamento fica só no log do servidor. Essa é a URL única cadastrada
+// no painel do Mercado Pago (assinatura de webhook da aplicação, tópico "orders") — atende
+// todas as unidades/contas de uma vez, sem precisar de caixaId na URL (ver
+// mercadopago.service.processarWebhook).
 async function webhook(req, res) {
   try {
-    const caixaId = req.query.caixaId;
-    if (caixaId) {
-      await service.processarWebhook(caixaId, req.body);
-    }
+    await service.processarWebhook(req.body);
   } catch (err) {
     console.error('Erro ao processar webhook Mercado Pago:', err);
   }
