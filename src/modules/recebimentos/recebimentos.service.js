@@ -24,39 +24,59 @@ async function criar({ itens, observacao, criadoPorId }) {
     throw Object.assign(new Error('itens é obrigatório'), { status: 400 });
   }
 
-  const itensValidos = itens
+  const itensBrutos = itens
     .map((i) => ({
       produtoId: Number(i.produtoId),
       quantidade: Number(i.quantidade),
+      // Presente quando o item foi recebido em caixas fechadas em vez de quantidade direta —
+      // "quantidade" acima vira o número de caixas, convertido pro grão-base do estoque
+      // (mesmo grão que a venda desconta) antes de guardar, ver abaixo.
+      embalagemId: i.embalagemId ? Number(i.embalagemId) : null,
       // Preço de custo é opcional e, se vier, vira o novo valor definitivo de Produto.precoCusto
       // (ver loop da transação abaixo) — deixar em branco no formulário significa "não mudar".
       precoCusto: i.precoCusto !== undefined && i.precoCusto !== null && i.precoCusto !== '' ? Number(i.precoCusto) : undefined,
     }))
     .filter((i) => i.produtoId && i.quantidade > 0);
 
-  if (itensValidos.length === 0) {
+  if (itensBrutos.length === 0) {
     throw Object.assign(new Error('Informe ao menos um produto com quantidade recebida'), { status: 400 });
   }
-  for (const item of itensValidos) {
+  for (const item of itensBrutos) {
     if (item.precoCusto !== undefined && (Number.isNaN(item.precoCusto) || item.precoCusto < 0)) {
       throw Object.assign(new Error(`Preço de custo inválido para o produto ${item.produtoId}`), { status: 400 });
     }
   }
 
-  const produtos = await prisma.produto.findMany({ where: { id: { in: itensValidos.map((i) => i.produtoId) } } });
-  for (const item of itensValidos) {
+  const produtos = await prisma.produto.findMany({ where: { id: { in: itensBrutos.map((i) => i.produtoId) } } });
+  const embalagemIds = itensBrutos.filter((i) => i.embalagemId).map((i) => i.embalagemId);
+  const embalagens = embalagemIds.length
+    ? await prisma.embalagemProduto.findMany({ where: { id: { in: embalagemIds } } })
+    : [];
+
+  const itensValidos = itensBrutos.map((item) => {
     const produto = produtos.find((p) => p.id === item.produtoId);
     if (!produto || !produto.ativo) {
       throw Object.assign(new Error(`Produto ${item.produtoId} não encontrado`), { status: 400 });
     }
-  }
+
+    let quantidadeBase = item.quantidade;
+    if (item.embalagemId) {
+      const embalagem = embalagens.find((e) => e.id === item.embalagemId && e.produtoId === produto.id);
+      if (!embalagem || !embalagem.ativo) {
+        throw Object.assign(new Error(`Caixa de "${produto.nome}" não encontrada`), { status: 400 });
+      }
+      quantidadeBase = item.quantidade * embalagem.quantidadeBandejas;
+    }
+
+    return { produtoId: produto.id, quantidadeBase, precoCusto: item.precoCusto };
+  });
 
   const recebimentoId = await prisma.$transaction(async (tx) => {
     const recebimento = await tx.recebimento.create({
       data: {
         observacao: observacao || null,
         criadoPorId: criadoPorId || null,
-        itens: { create: itensValidos.map((i) => ({ produtoId: i.produtoId, quantidadeRecebida: i.quantidade })) },
+        itens: { create: itensValidos.map((i) => ({ produtoId: i.produtoId, quantidadeRecebida: i.quantidadeBase })) },
       },
     });
 
@@ -64,7 +84,7 @@ async function criar({ itens, observacao, criadoPorId }) {
       await tx.produto.update({
         where: { id: item.produtoId },
         data: {
-          quantidade: { increment: item.quantidade },
+          quantidade: { increment: item.quantidadeBase },
           ...(item.precoCusto !== undefined ? { precoCusto: item.precoCusto } : {}),
         },
       });
@@ -73,7 +93,7 @@ async function criar({ itens, observacao, criadoPorId }) {
           produtoId: item.produtoId,
           caixaId: null,
           tipo: 'ENTRADA',
-          quantidade: item.quantidade,
+          quantidade: item.quantidadeBase,
           motivo: `Recebimento #${recebimento.id}`,
         },
       });

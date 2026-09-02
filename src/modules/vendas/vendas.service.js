@@ -14,12 +14,22 @@ function calcularTotal(itensComPreco, desconto, acrescimo = 0) {
   return Math.max(bruto - Number(desconto || 0) + Number(acrescimo || 0), 0);
 }
 
-// Quantidade em bandejas que um item de venda realmente tira do estoque do Produto. Item
-// normal: quantidade já é em bandejas. Item vendido como embalagem (ex: "1 caixa de 30"):
-// quantidade é o número de embalagens, então multiplica pelo tamanho travado na venda —
-// embalagem não tem estoque próprio, desconta sempre do mesmo Produto.quantidade/EstoqueCaixa.
-function bandejasDoItem(item) {
-  return item.embalagemId ? item.quantidade * item.bandejasPorEmbalagem : item.quantidade;
+function arredondarMoeda(valor) {
+  return Math.round(Number(valor) * 100) / 100;
+}
+
+// Quantidade no grão-base do estoque do Produto (Produto.quantidade/EstoqueCaixa — o mesmo
+// grão pra qualquer forma de venda) que um item de venda realmente tira. Três casos:
+// - embalagem ("1 caixa de 30"): quantidade é o número de embalagens, multiplica pelo
+//   tamanho travado na venda — embalagem não tem estoque próprio.
+// - vendidoPorUnidade ("2 ovos soltos"): quantidade já é no grão-base (só existe quando
+//   Produto.unidadesPorPacote > 1, e nesse caso o estoque já é contado nesse grão).
+// - normal ("1 dúzia"): quantidade é em "Produto.unidade", multiplica por unidadesPorPacote
+//   pra chegar no grão-base (1 quando o produto não é fracionável — comportamento de sempre).
+function unidadesBaseDoItem(item, unidadesPorPacote = 1) {
+  if (item.embalagemId) return item.quantidade * item.bandejasPorEmbalagem;
+  if (item.vendidoPorUnidade) return item.quantidade;
+  return item.quantidade * (unidadesPorPacote || 1);
 }
 
 async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaPagamento, vencimento, desconto = 0, acrescimo = 0, valorDinheiro, origemMotivo }) {
@@ -85,12 +95,18 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
       throw Object.assign(new Error(`Quantidade inválida para "${produto.nome}"`), { status: 400 });
     }
 
-    // Item vendido como "caixa" (embalagem fechada, ex: 30 bandejas por R$X): preço é o da
-    // embalagem inteira, e o que desconta do estoque é quantidade × bandejas por embalagem —
-    // a embalagem em si não tem estoque separado, sai sempre do mesmo estoque do produto.
+    // Três formas de vender o mesmo produto, todas descontando do mesmo estoque
+    // (Produto.quantidade/EstoqueCaixa), cada uma só mudando quanto isso representa no
+    // grão-base do estoque:
+    // - embalagem ("1 caixa de 30"): preço é o da embalagem inteira, desconta quantidade ×
+    //   bandejas por embalagem — a embalagem em si não tem estoque separado.
+    // - vendidoPorUnidade ("2 ovos soltos"): preço proporcional ao preço da "unidade" normal,
+    //   só existe se o produto tiver unidadesPorPacote > 1 configurado.
+    // - normal ("1 dúzia"): preço e desconto de sempre.
     let precoUnit = produto.precoVenda;
     let embalagemId = null;
     let bandejasPorEmbalagem = null;
+    let vendidoPorUnidade = false;
     if (i.embalagemId) {
       const embalagem = embalagens.find((e) => e.id === Number(i.embalagemId) && e.produtoId === produto.id);
       if (!embalagem || !embalagem.ativo) {
@@ -99,8 +115,16 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
       precoUnit = embalagem.preco;
       embalagemId = embalagem.id;
       bandejasPorEmbalagem = embalagem.quantidadeBandejas;
+    } else if (i.vendidoPorUnidade) {
+      if (!produto.unidadesPorPacote || produto.unidadesPorPacote <= 1) {
+        throw Object.assign(new Error(`"${produto.nome}" não está configurado para venda por unidade avulsa`), { status: 400 });
+      }
+      vendidoPorUnidade = true;
+      precoUnit = arredondarMoeda(Number(produto.precoVenda) / produto.unidadesPorPacote);
     }
-    const bandejasNecessarias = bandejasPorEmbalagem ? quantidade * bandejasPorEmbalagem : quantidade;
+
+    const item = { quantidade, embalagemId, bandejasPorEmbalagem, vendidoPorUnidade };
+    const bandejasNecessarias = unidadesBaseDoItem(item, produto.unidadesPorPacote);
 
     const disponivel = caixaId ? mapaEstoqueCaixa.get(produto.id) || 0 : produto.quantidade;
     if (disponivel < bandejasNecessarias) {
@@ -109,7 +133,16 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
         { status: 400 }
       );
     }
-    return { produtoId: produto.id, quantidade, precoUnit, embalagemId, bandejasPorEmbalagem, nome: produto.nome };
+    return {
+      produtoId: produto.id,
+      quantidade,
+      precoUnit,
+      embalagemId,
+      bandejasPorEmbalagem,
+      vendidoPorUnidade,
+      unidadesPorPacote: produto.unidadesPorPacote || 1,
+      nome: produto.nome,
+    };
   });
 
   const total = calcularTotal(itensComPreco, desconto, acrescimo);
@@ -145,12 +178,13 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
         total,
         confirmadaEm: viaMaquininha ? null : new Date(),
         itens: {
-          create: itensComPreco.map(({ produtoId, quantidade, precoUnit, embalagemId, bandejasPorEmbalagem }) => ({
+          create: itensComPreco.map(({ produtoId, quantidade, precoUnit, embalagemId, bandejasPorEmbalagem, vendidoPorUnidade }) => ({
             produtoId,
             quantidade,
             precoUnit,
             embalagemId,
             bandejasPorEmbalagem,
+            vendidoPorUnidade,
           })),
         },
       },
@@ -158,7 +192,7 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
 
     if (!viaMaquininha) {
       for (const item of itensComPreco) {
-        const bandejas = bandejasDoItem(item);
+        const bandejas = unidadesBaseDoItem(item, item.unidadesPorPacote);
         if (caixaId) {
           await tx.estoqueCaixa.update({
             where: { produtoId_caixaId: { produtoId: item.produtoId, caixaId: Number(caixaId) } },
@@ -215,8 +249,10 @@ async function confirmarVenda(vendaId, { formaPagamento, vencimento }) {
     await exigirCaixaAberto(venda.caixaId);
   }
 
+  const mapaProdutos = new Map();
   for (const item of venda.itens) {
     const produto = await prisma.produto.findUnique({ where: { id: item.produtoId } });
+    mapaProdutos.set(item.produtoId, produto);
     const disponivel = venda.caixaId
       ? (
           await prisma.estoqueCaixa.findUnique({
@@ -224,7 +260,7 @@ async function confirmarVenda(vendaId, { formaPagamento, vencimento }) {
           })
         )?.quantidade || 0
       : produto.quantidade;
-    if (disponivel < bandejasDoItem(item)) {
+    if (disponivel < unidadesBaseDoItem(item, produto.unidadesPorPacote)) {
       throw Object.assign(
         new Error(`Estoque insuficiente para o produto "${produto.nome}"${venda.caixaId ? ' nesta unidade' : ''}`),
         { status: 400 }
@@ -250,7 +286,7 @@ async function confirmarVenda(vendaId, { formaPagamento, vencimento }) {
       data: { status: 'CONFIRMADA', formaPagamento, confirmadaEm: new Date() },
     }),
     ...venda.itens.flatMap((item) => {
-      const bandejas = bandejasDoItem(item);
+      const bandejas = unidadesBaseDoItem(item, mapaProdutos.get(item.produtoId)?.unidadesPorPacote);
       return [
         venda.caixaId
           ? prisma.estoqueCaixa.update({
@@ -312,9 +348,15 @@ async function reabrirVenda(vendaId) {
     );
   }
 
+  const produtosDosItens = await prisma.produto.findMany({
+    where: { id: { in: venda.itens.map((i) => i.produtoId) } },
+    select: { id: true, unidadesPorPacote: true },
+  });
+  const mapaUnidadesPorPacote = new Map(produtosDosItens.map((p) => [p.id, p.unidadesPorPacote]));
+
   const operacoes = [
     ...venda.itens.flatMap((item) => {
-      const bandejas = bandejasDoItem(item);
+      const bandejas = unidadesBaseDoItem(item, mapaUnidadesPorPacote.get(item.produtoId));
       return [
         venda.caixaId
           ? prisma.estoqueCaixa.upsert({

@@ -11,9 +11,14 @@ function variacaoPct(atual, anterior) {
 }
 
 // Item vendido como embalagem/"caixa" (ver EmbalagemProduto) tem quantidade em número de
-// embalagens, não de bandejas — pra métricas de "quantidade vendida" precisa converter.
+// embalagens, não no grão-base do estoque; item normal de um produto fracionável
+// (Produto.unidadesPorPacote > 1) tem quantidade em "unidade" (dúzia/bandeja), não no
+// grão-base. Item vendidoPorUnidade já vem no grão-base. Pra métricas de "quantidade
+// vendida" bater com o mesmo grão em qualquer caso, precisa converter os dois primeiros.
 function unidadesVendidas(item) {
-  return item.embalagemId ? item.quantidade * item.bandejasPorEmbalagem : item.quantidade;
+  if (item.embalagemId) return item.quantidade * item.bandejasPorEmbalagem;
+  if (item.vendidoPorUnidade) return item.quantidade;
+  return item.quantidade * (item.produto?.unidadesPorPacote || 1);
 }
 
 function chaveDia(data) {
@@ -93,7 +98,8 @@ async function resumo(req, res, next) {
           produtoId: true,
           embalagemId: true,
           bandejasPorEmbalagem: true,
-          produto: { select: { nome: true, precoCusto: true } },
+          vendidoPorUnidade: true,
+          produto: { select: { nome: true, precoCusto: true, unidadesPorPacote: true } },
           venda: { select: { caixaId: true, caixa: { select: { nome: true, unidade: true } } } },
         },
       }),
@@ -204,10 +210,14 @@ async function resumo(req, res, next) {
       const mapaLucroProdutos = {};
       itensPeriodo.forEach((i) => {
         if (!mapaLucroProdutos[i.produtoId]) {
+          // precoCusto cadastrado é "por Produto.unidade" (dúzia/bandeja) — convertido aqui
+          // pro grão-base (mesmo grão de "quantidade", via unidadesVendidas) pra continuar
+          // batendo certo em produtos com venda por unidade avulsa ativada.
+          const unidadesPorPacote = i.produto.unidadesPorPacote || 1;
           mapaLucroProdutos[i.produtoId] = {
             produtoId: i.produtoId,
             nome: i.produto.nome,
-            precoCusto: i.produto.precoCusto !== null ? Number(i.produto.precoCusto) : null,
+            precoCusto: i.produto.precoCusto !== null ? Number(i.produto.precoCusto) / unidadesPorPacote : null,
             quantidade: 0,
             receita: 0,
           };

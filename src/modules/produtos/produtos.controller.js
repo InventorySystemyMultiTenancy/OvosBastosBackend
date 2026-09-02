@@ -102,6 +102,60 @@ async function enviarImagem(req, res, next) {
   }
 }
 
+// Muda o grão em que o estoque deste produto é contado (Produto.unidadesPorPacote). Reconverte
+// tudo que compartilha esse mesmo estoque — pool central, estoque por unidade e o tamanho das
+// caixas já cadastradas — pela razão entre o fator novo e o antigo, pra continuar
+// representando a mesma quantidade física, só que num grão diferente (ex: de "dúzias" pra
+// "ovos"). É assim que se ativa a venda por unidade avulsa (ver vendas.service.js).
+async function ativarVendaPorUnidade(req, res, next) {
+  try {
+    const id = Number(req.params.id);
+    const novoFator = Number(req.body.unidadesPorPacote);
+    if (!novoFator || novoFator < 1 || !Number.isInteger(novoFator)) {
+      return res.status(400).json({ error: 'unidadesPorPacote deve ser um número inteiro >= 1' });
+    }
+
+    const produto = await prisma.produto.findUnique({ where: { id } });
+    if (!produto || !produto.ativo) return res.status(404).json({ error: 'Produto não encontrado' });
+
+    const fatorAtual = produto.unidadesPorPacote || 1;
+    if (novoFator === fatorAtual) {
+      return res.json(produto);
+    }
+
+    const razao = novoFator / fatorAtual;
+
+    const [estoquesCaixa, embalagens] = await Promise.all([
+      prisma.estoqueCaixa.findMany({ where: { produtoId: id } }),
+      prisma.embalagemProduto.findMany({ where: { produtoId: id } }),
+    ]);
+
+    await prisma.$transaction([
+      prisma.produto.update({
+        where: { id },
+        data: {
+          unidadesPorPacote: novoFator,
+          quantidade: Math.round(produto.quantidade * razao),
+          estoqueMinimo: Math.round(produto.estoqueMinimo * razao),
+        },
+      }),
+      ...estoquesCaixa.map((e) =>
+        prisma.estoqueCaixa.update({ where: { id: e.id }, data: { quantidade: Math.round(e.quantidade * razao) } })
+      ),
+      ...embalagens.map((emb) =>
+        prisma.embalagemProduto.update({
+          where: { id: emb.id },
+          data: { quantidadeBandejas: Math.round(emb.quantidadeBandejas * razao) },
+        })
+      ),
+    ]);
+
+    res.json(await prisma.produto.findUnique({ where: { id } }));
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function remover(req, res, next) {
   try {
     await prisma.produto.update({ where: { id: Number(req.params.id) }, data: { ativo: false } });
@@ -111,4 +165,4 @@ async function remover(req, res, next) {
   }
 }
 
-module.exports = { listar, obter, criar, atualizar, enviarImagem, remover };
+module.exports = { listar, obter, criar, atualizar, enviarImagem, ativarVendaPorUnidade, remover };

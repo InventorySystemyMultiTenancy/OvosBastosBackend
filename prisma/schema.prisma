@@ -128,10 +128,18 @@ model Produto {
   nome          String
   tipo          String?
   unidade       String   @default("dúzia")
+  // Quantas unidades individuais vendáveis (ex: 1 ovo) cabem em 1 "unidade" (dúzia/bandeja)
+  // acima. 1 (padrão) = produto não é fracionável, tudo abaixo funciona exatamente como
+  // sempre. >1 = ativa venda por unidade avulsa (ver ItemVenda.vendidoPorUnidade) — a partir
+  // daí quantidade (e EstoqueCaixa/EmbalagemProduto.quantidadeBandejas deste produto) passa a
+  // contar nesse grão mais fino, não mais em "unidade". Convertido de uma vez só quando o
+  // produto é ativado — ver produtos.service.ativarVendaPorUnidade.
+  unidadesPorPacote Int   @default(1)
   precoVenda    Decimal  @db.Decimal(12, 2)
   precoCusto    Decimal? @db.Decimal(12, 2)
   // Pool central de estoque "recebido e ainda não distribuído" às unidades — não é mais
   // "estoque disponível para venda" quando a venda tem caixa associada (ver EstoqueCaixa).
+  // Contado em unidadesPorPacote (ex: ovos) quando esse fator é > 1, senão em "unidade".
   quantidade    Int      @default(0)
   estoqueMinimo Int      @default(0)
   imagemUrl     String?
@@ -159,6 +167,9 @@ model EmbalagemProduto {
   nome               String
   quantidadeBandejas Int
   preco              Decimal  @db.Decimal(12, 2)
+  // Foto própria da caixa no card do PDV — se vazio, usa a mesma imagem do produto unitário
+  // (ver resolução no frontend).
+  imagemUrl          String?
   ativo              Boolean  @default(true)
   createdAt          DateTime @default(now())
 
@@ -370,6 +381,11 @@ model ItemVenda {
   embalagemId          Int?
   embalagem            EmbalagemProduto? @relation(fields: [embalagemId], references: [id])
   bandejasPorEmbalagem Int?
+
+  // Vendido fracionado abaixo da "unidade" do produto (ex: 2 ovos soltos de uma dúzia) — só
+  // possível quando Produto.unidadesPorPacote > 1. Nesse caso quantidade já é a quantidade
+  // individual (mesmo grão do estoque), e precoUnit é o preço proporcional travado na venda.
+  vendidoPorUnidade Boolean @default(false)
 }
 
 model ContaReceber {
