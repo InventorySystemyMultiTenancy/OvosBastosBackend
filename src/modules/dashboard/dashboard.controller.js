@@ -1,4 +1,5 @@
 const prisma = require('../../config/db');
+const { unidadesVendidas, custoTotalDosItens } = require('../../utils/custoVenda');
 
 const DIAS_SEMANA = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 const TOP_PRODUTOS_POR_CAIXA = 5;
@@ -8,17 +9,6 @@ const TOP_PRODUTOS_POR_CAIXA = 5;
 function variacaoPct(atual, anterior) {
   if (!anterior) return atual > 0 ? null : 0;
   return ((atual - anterior) / anterior) * 100;
-}
-
-// Item vendido como embalagem/"caixa" (ver EmbalagemProduto) tem quantidade em número de
-// embalagens, não no grão-base do estoque; item normal de um produto fracionável
-// (Produto.unidadesPorPacote > 1) tem quantidade em "unidade" (dúzia/bandeja), não no
-// grão-base. Item vendidoPorUnidade já vem no grão-base. Pra métricas de "quantidade
-// vendida" bater com o mesmo grão em qualquer caso, precisa converter os dois primeiros.
-function unidadesVendidas(item) {
-  if (item.embalagemId) return item.quantidade * item.bandejasPorEmbalagem;
-  if (item.vendidoPorUnidade) return item.quantidade;
-  return item.quantidade * (item.produto?.unidadesPorPacote || 1);
 }
 
 function chaveDia(data) {
@@ -31,7 +21,6 @@ function chaveDia(data) {
 
 async function resumo(req, res, next) {
   try {
-    const dias = [1, 7, 30, 90].includes(Number(req.query.dias)) ? Number(req.query.dias) : 30;
     const ehAdmin = req.usuario?.perfil === 'ADMIN';
 
     const inicioHoje = new Date();
@@ -40,9 +29,22 @@ async function resumo(req, res, next) {
     inicioMes.setDate(1);
     inicioMes.setHours(0, 0, 0, 0);
 
-    const desde = new Date();
-    desde.setDate(desde.getDate() - (dias - 1));
-    desde.setHours(0, 0, 0, 0);
+    // Período customizado (botão "Escolher data" no topo do dashboard) usa de/ate direto em
+    // vez do atalho relativo "dias" — desde/ate viram os limites exatos da consulta, e dias
+    // vira só a contagem de dias entre eles (usada pra montar o sparkline dia a dia e pra
+    // dimensionar a janela de comparação "período anterior").
+    let desde, ate, dias;
+    if (req.query.de && req.query.ate) {
+      desde = new Date(`${req.query.de}T00:00:00`);
+      ate = new Date(`${req.query.ate}T23:59:59.999`);
+      dias = Math.max(1, Math.round((ate - desde) / (24 * 60 * 60 * 1000)) + 1);
+    } else {
+      dias = [1, 7, 30, 90].includes(Number(req.query.dias)) ? Number(req.query.dias) : 30;
+      ate = new Date();
+      desde = new Date();
+      desde.setDate(desde.getDate() - (dias - 1));
+      desde.setHours(0, 0, 0, 0);
+    }
 
     // Período anterior de mesmo tamanho, usado só pra calcular a variação % mostrada
     // nos cards do topo do dashboard (ex: "+12,5% vs 30 dias anteriores").
@@ -65,6 +67,7 @@ async function resumo(req, res, next) {
       divergenciasCaixaAbertas,
       vendasPeriodoAnterior,
       despesasPeriodoAnterior,
+      itensPeriodoAnterior,
     ] = await Promise.all([
       prisma.venda.aggregate({
         where: { status: 'CONFIRMADA', confirmadaEm: { gte: inicioHoje } },
@@ -79,7 +82,7 @@ async function resumo(req, res, next) {
       prisma.bandejaCliente.findMany(),
       prisma.produto.findMany({ where: { ativo: true } }),
       prisma.venda.findMany({
-        where: { status: 'CONFIRMADA', confirmadaEm: { gte: desde } },
+        where: { status: 'CONFIRMADA', confirmadaEm: { gte: desde, lte: ate } },
         select: {
           id: true,
           total: true,
@@ -91,7 +94,7 @@ async function resumo(req, res, next) {
         },
       }),
       prisma.itemVenda.findMany({
-        where: { venda: { status: 'CONFIRMADA', confirmadaEm: { gte: desde } } },
+        where: { venda: { status: 'CONFIRMADA', confirmadaEm: { gte: desde, lte: ate } } },
         select: {
           quantidade: true,
           precoUnit: true,
@@ -111,7 +114,7 @@ async function resumo(req, res, next) {
       // Gastos são informação financeira sensível — só buscamos e devolvemos para ADMIN.
       ehAdmin
         ? prisma.contaPagar.findMany({
-            where: { pago: true, pagoEm: { gte: desde } },
+            where: { pago: true, pagoEm: { gte: desde, lte: ate } },
             select: { valor: true, pagoEm: true, caixaId: true },
           })
         : Promise.resolve([]),
@@ -144,6 +147,20 @@ async function resumo(req, res, next) {
             _sum: { valor: true },
           })
         : Promise.resolve({ _sum: { valor: 0 } }),
+      // Só pra calcular o custo de produtos do período anterior (comparação do Lucro
+      // Líquido) — mesmo formato de itensPeriodo, só que na janela anterior.
+      ehAdmin
+        ? prisma.itemVenda.findMany({
+            where: { venda: { status: 'CONFIRMADA', confirmadaEm: { gte: desdeAnterior, lt: desde } } },
+            select: {
+              quantidade: true,
+              embalagemId: true,
+              bandejasPorEmbalagem: true,
+              vendidoPorUnidade: true,
+              produto: { select: { precoCusto: true, unidadesPorPacote: true } },
+            },
+          })
+        : Promise.resolve([]),
     ]);
 
     const bandejasPendentes = bandejas.reduce((soma, b) => soma + (b.emprestadas - b.devolvidas), 0);
@@ -332,13 +349,20 @@ async function resumo(req, res, next) {
       }))
       .sort((a, b) => b.receitas - a.receitas);
 
+    // Lucro Líquido de verdade desconta os dois: o que foi pago em despesas operacionais
+    // (ContaPagar) E o custo dos produtos vendidos (Produto.precoCusto) — antes só descontava
+    // despesas, o que inflava o número já que nunca contava o custo do que foi vendido.
     const despesasPeriodoTotal = ehAdmin ? despesasPeriodo.reduce((s, c) => s + Number(c.valor), 0) : null;
-    const lucroLiquidoPeriodo = ehAdmin ? faturamentoPeriodo - despesasPeriodoTotal : null;
+    const custoProdutosPeriodo = ehAdmin ? lucroPorProduto.reduce((s, p) => s + (p.custoTotal || 0), 0) : null;
+    const lucroLiquidoPeriodo = ehAdmin ? faturamentoPeriodo - custoProdutosPeriodo - despesasPeriodoTotal : null;
 
     const faturamentoPeriodoAnterior = Number(vendasPeriodoAnterior._sum.total || 0);
     const pedidosPeriodoAnterior = vendasPeriodoAnterior._count;
     const despesasPeriodoAnteriorTotal = ehAdmin ? Number(despesasPeriodoAnterior._sum.valor || 0) : null;
-    const lucroLiquidoPeriodoAnterior = ehAdmin ? faturamentoPeriodoAnterior - despesasPeriodoAnteriorTotal : null;
+    const custoProdutosPeriodoAnterior = ehAdmin ? custoTotalDosItens(itensPeriodoAnterior) : null;
+    const lucroLiquidoPeriodoAnterior = ehAdmin
+      ? faturamentoPeriodoAnterior - custoProdutosPeriodoAnterior - despesasPeriodoAnteriorTotal
+      : null;
 
     const variacaoFaturamentoPct = variacaoPct(faturamentoPeriodo, faturamentoPeriodoAnterior);
     const variacaoVendasPct = variacaoPct(pedidosPeriodo, pedidosPeriodoAnterior);
@@ -368,6 +392,8 @@ async function resumo(req, res, next) {
       estoqueDisponivel,
       produtosEstoqueBaixo,
       periodoDias: dias,
+      periodoDesde: desde,
+      periodoAte: ate,
       faturamentoPeriodo,
       pedidosPeriodo,
       ticketMedio,
@@ -381,6 +407,7 @@ async function resumo(req, res, next) {
       melhorDiaSemana,
       melhorHora,
       despesasPeriodo: despesasPeriodoTotal,
+      custoProdutosPeriodo,
       lucroLiquidoPeriodo,
       variacaoFaturamentoPct,
       variacaoVendasPct,
@@ -474,20 +501,40 @@ async function reposicaoMensal(req, res, next) {
 // despesas/lucro são informação financeira sensível).
 async function lucroPorUnidade(req, res, next) {
   try {
-    const dias = [1, 7, 30, 90].includes(Number(req.query.dias)) ? Number(req.query.dias) : 30;
+    let desde, ate, dias;
+    if (req.query.de && req.query.ate) {
+      desde = new Date(`${req.query.de}T00:00:00`);
+      ate = new Date(`${req.query.ate}T23:59:59.999`);
+      dias = Math.max(1, Math.round((ate - desde) / (24 * 60 * 60 * 1000)) + 1);
+    } else {
+      dias = [1, 7, 30, 90].includes(Number(req.query.dias)) ? Number(req.query.dias) : 30;
+      ate = new Date();
+      desde = new Date();
+      desde.setDate(desde.getDate() - (dias - 1));
+      desde.setHours(0, 0, 0, 0);
+    }
 
-    const desde = new Date();
-    desde.setDate(desde.getDate() - (dias - 1));
-    desde.setHours(0, 0, 0, 0);
-
-    const [vendasPeriodo, despesasPeriodo] = await Promise.all([
+    const [vendasPeriodo, despesasPeriodo, itensPeriodo] = await Promise.all([
       prisma.venda.findMany({
-        where: { status: 'CONFIRMADA', confirmadaEm: { gte: desde } },
+        where: { status: 'CONFIRMADA', confirmadaEm: { gte: desde, lte: ate } },
         select: { total: true, confirmadaEm: true, caixa: { select: { unidade: true } } },
       }),
       prisma.contaPagar.findMany({
-        where: { pago: true, pagoEm: { gte: desde } },
+        where: { pago: true, pagoEm: { gte: desde, lte: ate } },
         select: { valor: true, pagoEm: true, caixa: { select: { unidade: true } } },
+      }),
+      // Custo dos produtos vendidos (Produto.precoCusto) — o Lucro Líquido desconta isso
+      // além das despesas, senão o número não reflete o que realmente sobrou.
+      prisma.itemVenda.findMany({
+        where: { venda: { status: 'CONFIRMADA', confirmadaEm: { gte: desde, lte: ate } } },
+        select: {
+          quantidade: true,
+          embalagemId: true,
+          bandejasPorEmbalagem: true,
+          vendidoPorUnidade: true,
+          produto: { select: { precoCusto: true, unidadesPorPacote: true } },
+          venda: { select: { confirmadaEm: true, caixa: { select: { unidade: true } } } },
+        },
       }),
     ]);
 
@@ -495,11 +542,11 @@ async function lucroPorUnidade(req, res, next) {
     function unidadeDe(registro) {
       const unidade = registro.caixa?.unidade || 'Sem unidade';
       if (!mapaUnidades[unidade]) {
-        mapaUnidades[unidade] = { unidade, faturamento: 0, despesas: 0, pedidos: 0, porDia: {} };
+        mapaUnidades[unidade] = { unidade, faturamento: 0, despesas: 0, custoProdutos: 0, pedidos: 0, porDia: {} };
         for (let i = 0; i < dias; i++) {
           const d = new Date(desde);
           d.setDate(d.getDate() + i);
-          mapaUnidades[unidade].porDia[chaveDia(d)] = { data: chaveDia(d), faturamento: 0, despesas: 0, pedidos: 0 };
+          mapaUnidades[unidade].porDia[chaveDia(d)] = { data: chaveDia(d), faturamento: 0, despesas: 0, custoProdutos: 0, pedidos: 0 };
         }
       }
       return mapaUnidades[unidade];
@@ -523,14 +570,25 @@ async function lucroPorUnidade(req, res, next) {
       if (dia) dia.despesas += Number(c.valor);
     });
 
+    itensPeriodo.forEach((i) => {
+      if (i.produto.precoCusto === null) return;
+      const bloco = unidadeDe(i.venda);
+      const precoCustoBase = Number(i.produto.precoCusto) / (i.produto.unidadesPorPacote || 1);
+      const custo = precoCustoBase * unidadesVendidas(i);
+      bloco.custoProdutos += custo;
+      const dia = bloco.porDia[chaveDia(i.venda.confirmadaEm)];
+      if (dia) dia.custoProdutos += custo;
+    });
+
     const unidades = Object.values(mapaUnidades)
       .map((u) => ({
         unidade: u.unidade,
         faturamento: u.faturamento,
         despesas: u.despesas,
-        lucro: u.faturamento - u.despesas,
+        custoProdutos: u.custoProdutos,
+        lucro: u.faturamento - u.custoProdutos - u.despesas,
         pedidos: u.pedidos,
-        porDia: Object.values(u.porDia).map((d) => ({ ...d, lucro: d.faturamento - d.despesas })),
+        porDia: Object.values(u.porDia).map((d) => ({ ...d, lucro: d.faturamento - d.custoProdutos - d.despesas })),
       }))
       .sort((a, b) => b.lucro - a.lucro);
 

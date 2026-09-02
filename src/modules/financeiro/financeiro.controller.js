@@ -1,4 +1,5 @@
 const prisma = require('../../config/db');
+const { custoTotalDosItens } = require('../../utils/custoVenda');
 
 const FORMAS_PAGAMENTO = ['PIX', 'DINHEIRO', 'CARTAO', 'BOLETO', 'FIADO'];
 
@@ -472,7 +473,7 @@ async function relatorioPeriodo(req, res, next) {
     const fim = new Date(ate);
     fim.setHours(23, 59, 59, 999);
 
-    const [contasPagas, vendasConfirmadas] = await Promise.all([
+    const [contasPagas, vendasConfirmadas, itensVendidos] = await Promise.all([
       prisma.contaPagar.findMany({
         where: { pago: true, pagoEm: { gte: inicio, lte: fim } },
         include: { caixa: true },
@@ -482,12 +483,31 @@ async function relatorioPeriodo(req, res, next) {
         where: { status: 'CONFIRMADA', confirmadaEm: { gte: inicio, lte: fim } },
         _sum: { total: true },
       }),
+      // Custo dos produtos vendidos (Produto.precoCusto) — o lucro desconta isso além das
+      // despesas operacionais, senão o número não reflete o que realmente sobrou.
+      prisma.itemVenda.findMany({
+        where: { venda: { status: 'CONFIRMADA', confirmadaEm: { gte: inicio, lte: fim } } },
+        select: {
+          quantidade: true,
+          embalagemId: true,
+          bandejasPorEmbalagem: true,
+          vendidoPorUnidade: true,
+          produto: { select: { precoCusto: true, unidadesPorPacote: true } },
+        },
+      }),
     ]);
 
     const despesasTotal = contasPagas.reduce((soma, c) => soma + Number(c.valor), 0);
+    const custoProdutosTotal = custoTotalDosItens(itensVendidos);
     const faturamento = Number(vendasConfirmadas._sum.total || 0);
 
-    res.json({ contasPagas, faturamento, despesasTotal, lucro: faturamento - despesasTotal });
+    res.json({
+      contasPagas,
+      faturamento,
+      despesasTotal,
+      custoProdutosTotal,
+      lucro: faturamento - custoProdutosTotal - despesasTotal,
+    });
   } catch (err) {
     next(err);
   }
