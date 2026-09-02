@@ -10,11 +10,14 @@ async function listarCatalogo(req, res, next) {
         id: true,
         nome: true,
         tipo: true,
-        unidade: true,
-        precoVenda: true,
         quantidade: true,
         estoqueMinimo: true,
         imagemUrl: true,
+        niveisVenda: {
+          where: { ativo: true },
+          orderBy: { quantidadeGrao: 'asc' },
+          select: { id: true, nome: true, quantidadeGrao: true, preco: true, ehBase: true, imagemUrl: true },
+        },
       },
       orderBy: { nome: 'asc' },
     });

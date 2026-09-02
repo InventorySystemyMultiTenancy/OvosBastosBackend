@@ -489,10 +489,8 @@ async function relatorioPeriodo(req, res, next) {
         where: { venda: { status: 'CONFIRMADA', confirmadaEm: { gte: inicio, lte: fim } } },
         select: {
           quantidade: true,
-          embalagemId: true,
-          bandejasPorEmbalagem: true,
-          vendidoPorUnidade: true,
-          produto: { select: { precoCusto: true, unidadesPorPacote: true } },
+          quantidadeGraoPorNivel: true,
+          produto: { select: { precoCusto: true } },
         },
       }),
     ]);

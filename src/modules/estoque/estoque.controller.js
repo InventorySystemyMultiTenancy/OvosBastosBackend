@@ -134,7 +134,6 @@ async function matriz(req, res, next) {
       produtos: produtos.map((p) => ({
         id: p.id,
         nome: p.nome,
-        unidade: p.unidade,
         naoDistribuido: p.quantidade,
         estoqueMinimo: p.estoqueMinimo,
       })),

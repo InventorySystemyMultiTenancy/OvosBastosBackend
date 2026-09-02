@@ -7,7 +7,7 @@ const INCLUDE_PADRAO = {
   cliente: true,
   vendedor: { select: { id: true, nome: true } },
   caixa: { select: { id: true, nome: true, unidade: true, ativo: true } },
-  itens: { include: { produto: true, embalagem: true } },
+  itens: { include: { produto: true, nivelVenda: true } },
   pagamentoPointMP: true,
 };
 
@@ -51,11 +51,6 @@ async function obter(req, res, next) {
   }
 }
 
-function calcularTotal(itensComPreco, desconto) {
-  const bruto = itensComPreco.reduce((soma, i) => soma + i.quantidade * Number(i.precoUnit), 0);
-  return Math.max(bruto - Number(desconto || 0), 0);
-}
-
 // Login travado a uma unidade (Usuario.unidade) só pode vender por um caixa daquela
 // unidade — mesmo que o corpo da requisição peça outro, isso é barrado aqui (não só
 // escondido no frontend). Uma unidade pode ter mais de um caixa físico.
@@ -63,45 +58,6 @@ async function caixaPermitida(req, caixaId) {
   if (!req.usuario?.unidade) return true;
   const caixa = await prisma.caixa.findUnique({ where: { id: Number(caixaId) }, select: { unidade: true } });
   return Boolean(caixa) && caixa.unidade === req.usuario.unidade;
-}
-
-async function criar(req, res, next) {
-  try {
-    const { clienteId, itens, desconto, caixaId } = req.body;
-    if (!clienteId || !Array.isArray(itens) || itens.length === 0) {
-      return res.status(400).json({ error: 'clienteId e ao menos um item são obrigatórios' });
-    }
-    if (!(await caixaPermitida(req, caixaId))) {
-      return res.status(400).json({ error: 'Este login só pode vender pela unidade designada' });
-    }
-
-    const produtos = await prisma.produto.findMany({
-      where: { id: { in: itens.map((i) => Number(i.produtoId)) } },
-    });
-    const itensComPreco = itens.map((i) => {
-      const produto = produtos.find((p) => p.id === Number(i.produtoId));
-      if (!produto) throw Object.assign(new Error(`Produto ${i.produtoId} não encontrado`), { status: 400 });
-      return { produtoId: produto.id, quantidade: Number(i.quantidade), precoUnit: produto.precoVenda };
-    });
-
-    const total = calcularTotal(itensComPreco, desconto);
-
-    const venda = await prisma.venda.create({
-      data: {
-        clienteId: Number(clienteId),
-        vendedorId: req.usuario.id,
-        caixaId: caixaId ? Number(caixaId) : null,
-        desconto: desconto || 0,
-        total,
-        itens: { create: itensComPreco },
-      },
-      include: INCLUDE_PADRAO,
-    });
-
-    res.status(201).json(venda);
-  } catch (err) {
-    next(err);
-  }
 }
 
 async function checkout(req, res, next) {
@@ -215,7 +171,7 @@ async function comprovante(req, res, next) {
       cliente: venda.cliente.nome,
       vendedor: venda.vendedor?.nome || 'Loja Online',
       itens: venda.itens.map((i) => ({
-        produto: i.embalagem ? `${i.produto.nome} — ${i.embalagem.nome}` : i.produto.nome,
+        produto: i.nivelVenda && !i.nivelVenda.ehBase ? `${i.produto.nome} — ${i.nivelVenda.nome}` : i.produto.nome,
         quantidade: i.quantidade,
         precoUnit: i.precoUnit,
         subtotal: Number(i.precoUnit) * i.quantidade,
@@ -235,7 +191,6 @@ async function comprovante(req, res, next) {
 module.exports = {
   listar,
   obter,
-  criar,
   checkout,
   confirmar,
   cancelar,

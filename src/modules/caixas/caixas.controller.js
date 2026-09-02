@@ -68,7 +68,7 @@ async function estoquePorCaixa(req, res, next) {
       prisma.produto.findMany({
         where: { ativo: true },
         orderBy: { nome: 'asc' },
-        include: { embalagens: { where: { ativo: true }, orderBy: { quantidadeBandejas: 'asc' } } },
+        include: { niveisVenda: { where: { ativo: true }, orderBy: { quantidadeGrao: 'asc' } } },
       }),
       prisma.estoqueCaixa.findMany({ where: { caixaId } }),
     ]);

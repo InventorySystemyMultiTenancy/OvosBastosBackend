@@ -75,7 +75,6 @@ async function listarPrecos(req, res, next) {
       produtos.map((p) => ({
         produtoId: p.id,
         nome: p.nome,
-        unidade: p.unidade,
         precoUnitario: mapaPrecos.has(p.id) ? mapaPrecos.get(p.id) : null,
       }))
     );

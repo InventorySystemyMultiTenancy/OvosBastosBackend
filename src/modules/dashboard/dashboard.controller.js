@@ -99,10 +99,9 @@ async function resumo(req, res, next) {
           quantidade: true,
           precoUnit: true,
           produtoId: true,
-          embalagemId: true,
-          bandejasPorEmbalagem: true,
-          vendidoPorUnidade: true,
-          produto: { select: { nome: true, precoCusto: true, unidadesPorPacote: true } },
+          nivelVendaId: true,
+          quantidadeGraoPorNivel: true,
+          produto: { select: { nome: true, precoCusto: true } },
           venda: { select: { caixaId: true, caixa: { select: { nome: true, unidade: true } } } },
         },
       }),
@@ -154,10 +153,8 @@ async function resumo(req, res, next) {
             where: { venda: { status: 'CONFIRMADA', confirmadaEm: { gte: desdeAnterior, lt: desde } } },
             select: {
               quantidade: true,
-              embalagemId: true,
-              bandejasPorEmbalagem: true,
-              vendidoPorUnidade: true,
-              produto: { select: { precoCusto: true, unidadesPorPacote: true } },
+              quantidadeGraoPorNivel: true,
+              produto: { select: { precoCusto: true } },
             },
           })
         : Promise.resolve([]),
@@ -227,14 +224,11 @@ async function resumo(req, res, next) {
       const mapaLucroProdutos = {};
       itensPeriodo.forEach((i) => {
         if (!mapaLucroProdutos[i.produtoId]) {
-          // precoCusto cadastrado é "por Produto.unidade" (dúzia/bandeja) — convertido aqui
-          // pro grão-base (mesmo grão de "quantidade", via unidadesVendidas) pra continuar
-          // batendo certo em produtos com venda por unidade avulsa ativada.
-          const unidadesPorPacote = i.produto.unidadesPorPacote || 1;
+          // precoCusto já vem em grão-base (mesmo grão de "quantidade", via unidadesVendidas).
           mapaLucroProdutos[i.produtoId] = {
             produtoId: i.produtoId,
             nome: i.produto.nome,
-            precoCusto: i.produto.precoCusto !== null ? Number(i.produto.precoCusto) / unidadesPorPacote : null,
+            precoCusto: i.produto.precoCusto !== null ? Number(i.produto.precoCusto) : null,
             quantidade: 0,
             receita: 0,
           };
@@ -527,10 +521,8 @@ async function lucroPorUnidade(req, res, next) {
         where: { venda: { status: 'CONFIRMADA', confirmadaEm: { gte: desde, lte: ate } } },
         select: {
           quantidade: true,
-          embalagemId: true,
-          bandejasPorEmbalagem: true,
-          vendidoPorUnidade: true,
-          produto: { select: { precoCusto: true, unidadesPorPacote: true } },
+          quantidadeGraoPorNivel: true,
+          produto: { select: { precoCusto: true } },
           venda: { select: { confirmadaEm: true, caixa: { select: { unidade: true } } } },
         },
       }),
@@ -571,8 +563,7 @@ async function lucroPorUnidade(req, res, next) {
     itensPeriodo.forEach((i) => {
       if (i.produto.precoCusto === null) return;
       const bloco = unidadeDe(i.venda);
-      const precoCustoBase = Number(i.produto.precoCusto) / (i.produto.unidadesPorPacote || 1);
-      const custo = precoCustoBase * unidadesVendidas(i);
+      const custo = Number(i.produto.precoCusto) * unidadesVendidas(i);
       bloco.custoProdutos += custo;
       const dia = bloco.porDia[chaveDia(i.venda.confirmadaEm)];
       if (dia) dia.custoProdutos += custo;

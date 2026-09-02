@@ -7,7 +7,7 @@ async function listar(req, res, next) {
       prisma.produto.findMany({
         where: { ativo: true },
         orderBy: { nome: 'asc' },
-        include: { embalagens: { where: { ativo: true }, orderBy: { quantidadeBandejas: 'asc' } } },
+        include: { niveisVenda: { where: { ativo: true }, orderBy: { quantidadeGrao: 'asc' } } },
       }),
       prisma.estoqueCaixa.findMany({ where: { caixa: { ativo: true } } }),
     ]);
@@ -42,18 +42,15 @@ async function obter(req, res, next) {
 
 async function criar(req, res, next) {
   try {
-    const { nome, tipo, unidade, precoVenda, precoCusto, estoqueMinimo, quantidade } = req.body;
-    if (!nome || precoVenda === undefined) {
-      return res.status(400).json({ error: 'Nome e preço de venda são obrigatórios' });
+    const { nome, tipo, estoqueMinimo, quantidade } = req.body;
+    if (!nome) {
+      return res.status(400).json({ error: 'Nome é obrigatório' });
     }
 
     const produto = await prisma.produto.create({
       data: {
         nome,
         tipo,
-        unidade: unidade || 'dúzia',
-        precoVenda,
-        precoCusto,
         estoqueMinimo: estoqueMinimo || 0,
         quantidade: quantidade || 0,
       },
@@ -64,12 +61,14 @@ async function criar(req, res, next) {
   }
 }
 
+// precoCusto já vem por grão-base (o frontend converte a partir do nível de referência antes
+// de enviar — ver ProdutosTab.jsx) — aqui só grava o valor recebido.
 async function atualizar(req, res, next) {
   try {
-    const { nome, tipo, unidade, precoVenda, precoCusto, estoqueMinimo } = req.body;
+    const { nome, tipo, precoCusto, estoqueMinimo } = req.body;
     const produto = await prisma.produto.update({
       where: { id: Number(req.params.id) },
-      data: { nome, tipo, unidade, precoVenda, precoCusto, estoqueMinimo },
+      data: { nome, tipo, precoCusto, estoqueMinimo },
     });
     res.json(produto);
   } catch (err) {
@@ -102,60 +101,6 @@ async function enviarImagem(req, res, next) {
   }
 }
 
-// Muda o grão em que o estoque deste produto é contado (Produto.unidadesPorPacote). Reconverte
-// tudo que compartilha esse mesmo estoque — pool central, estoque por unidade e o tamanho das
-// caixas já cadastradas — pela razão entre o fator novo e o antigo, pra continuar
-// representando a mesma quantidade física, só que num grão diferente (ex: de "dúzias" pra
-// "ovos"). É assim que se ativa a venda por unidade avulsa (ver vendas.service.js).
-async function ativarVendaPorUnidade(req, res, next) {
-  try {
-    const id = Number(req.params.id);
-    const novoFator = Number(req.body.unidadesPorPacote);
-    if (!novoFator || novoFator < 1 || !Number.isInteger(novoFator)) {
-      return res.status(400).json({ error: 'unidadesPorPacote deve ser um número inteiro >= 1' });
-    }
-
-    const produto = await prisma.produto.findUnique({ where: { id } });
-    if (!produto || !produto.ativo) return res.status(404).json({ error: 'Produto não encontrado' });
-
-    const fatorAtual = produto.unidadesPorPacote || 1;
-    if (novoFator === fatorAtual) {
-      return res.json(produto);
-    }
-
-    const razao = novoFator / fatorAtual;
-
-    const [estoquesCaixa, embalagens] = await Promise.all([
-      prisma.estoqueCaixa.findMany({ where: { produtoId: id } }),
-      prisma.embalagemProduto.findMany({ where: { produtoId: id } }),
-    ]);
-
-    await prisma.$transaction([
-      prisma.produto.update({
-        where: { id },
-        data: {
-          unidadesPorPacote: novoFator,
-          quantidade: Math.round(produto.quantidade * razao),
-          estoqueMinimo: Math.round(produto.estoqueMinimo * razao),
-        },
-      }),
-      ...estoquesCaixa.map((e) =>
-        prisma.estoqueCaixa.update({ where: { id: e.id }, data: { quantidade: Math.round(e.quantidade * razao) } })
-      ),
-      ...embalagens.map((emb) =>
-        prisma.embalagemProduto.update({
-          where: { id: emb.id },
-          data: { quantidadeBandejas: Math.round(emb.quantidadeBandejas * razao) },
-        })
-      ),
-    ]);
-
-    res.json(await prisma.produto.findUnique({ where: { id } }));
-  } catch (err) {
-    next(err);
-  }
-}
-
 async function remover(req, res, next) {
   try {
     await prisma.produto.update({ where: { id: Number(req.params.id) }, data: { ativo: false } });
@@ -165,4 +110,4 @@ async function remover(req, res, next) {
   }
 }
 
-module.exports = { listar, obter, criar, atualizar, enviarImagem, ativarVendaPorUnidade, remover };
+module.exports = { listar, obter, criar, atualizar, enviarImagem, remover };

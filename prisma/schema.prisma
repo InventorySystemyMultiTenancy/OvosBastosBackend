@@ -124,22 +124,16 @@ model PrecoFornecedor {
 }
 
 model Produto {
-  id            Int      @id @default(autoincrement())
-  nome          String
-  tipo          String?
-  unidade       String   @default("dúzia")
-  // Quantas unidades individuais vendáveis (ex: 1 ovo) cabem em 1 "unidade" (dúzia/bandeja)
-  // acima. 1 (padrão) = produto não é fracionável, tudo abaixo funciona exatamente como
-  // sempre. >1 = ativa venda por unidade avulsa (ver ItemVenda.vendidoPorUnidade) — a partir
-  // daí quantidade (e EstoqueCaixa/EmbalagemProduto.quantidadeBandejas deste produto) passa a
-  // contar nesse grão mais fino, não mais em "unidade". Convertido de uma vez só quando o
-  // produto é ativado — ver produtos.service.ativarVendaPorUnidade.
-  unidadesPorPacote Int   @default(1)
-  precoVenda    Decimal  @db.Decimal(12, 2)
-  precoCusto    Decimal? @db.Decimal(12, 2)
+  id   Int     @id @default(autoincrement())
+  nome String
+  tipo String?
+  // Preço de custo, sempre por grão-base (o grão mais fino vendável deste produto, ex: 1 ovo
+  // — ver NivelVendaProduto). Cadastrado na tela "por nível de referência" e convertido pra
+  // grão-base ao salvar (ver produtos.controller.js).
+  precoCusto Decimal? @db.Decimal(12, 2)
   // Pool central de estoque "recebido e ainda não distribuído" às unidades — não é mais
   // "estoque disponível para venda" quando a venda tem caixa associada (ver EstoqueCaixa).
-  // Contado em unidadesPorPacote (ex: ovos) quando esse fator é > 1, senão em "unidade".
+  // Sempre contado em grão-base (o menor grão vendável do produto — ver NivelVendaProduto).
   quantidade    Int      @default(0)
   estoqueMinimo Int      @default(0)
   imagemUrl     String?
@@ -152,26 +146,33 @@ model Produto {
   itensRecebimento ItemRecebimento[]
   estoquePorCaixa  EstoqueCaixa[]
   precosFornecedor PrecoFornecedor[]
-  embalagens       EmbalagemProduto[]
+  niveisVenda      NivelVendaProduto[]
 }
 
-// "Caixa" no sentido comercial (ex: caixa com 30 bandejas de ovos) — nome do model é
-// EmbalagemProduto de propósito, pra não colidir com o model Caixa (registro/unidade de
-// venda) que já é usado em todo o resto do schema. Não tem estoque próprio: vender uma
-// embalagem desconta quantidadeBandejas direto do estoque do Produto (Produto.quantidade ou
-// EstoqueCaixa, dependendo se a venda tem caixa/unidade associada) — ver ItemVenda.embalagemId.
-model EmbalagemProduto {
-  id                 Int      @id @default(autoincrement())
-  produtoId          Int
-  produto            Produto  @relation(fields: [produtoId], references: [id], onDelete: Cascade)
-  nome               String
-  quantidadeBandejas Int
-  preco              Decimal  @db.Decimal(12, 2)
-  // Foto própria da caixa no card do PDV — se vazio, usa a mesma imagem do produto unitário
-  // (ver resolução no frontend).
-  imagemUrl          String?
-  ativo              Boolean  @default(true)
-  createdAt          DateTime @default(now())
+// Um jeito vendável de embalar o mesmo produto (ex: Unidade, Dúzia, Bandeja, Caixa) — não tem
+// estoque próprio, todos descontam do mesmo estoque em grão-base do Produto (ver
+// ItemVenda.nivelVendaId). Cada produto tem exatamente 1 nível com ehBase=true, cujo `preco`
+// é digitado à mão e serve de referência: os demais níveis (precoManual=false) têm seu preço
+// recalculado automaticamente (preco = precoBase / quantidadeGraoBase * quantidadeGrao) toda
+// vez que o preço base muda. Um nível marcado precoManual=true (por edição direta do usuário,
+// ou toda "caixa fechada" com desconto por atacado) para de seguir esse recálculo até alguém
+// clicar em "recalcular".
+model NivelVendaProduto {
+  id            Int      @id @default(autoincrement())
+  produtoId     Int
+  produto       Produto  @relation(fields: [produtoId], references: [id], onDelete: Cascade)
+  nome          String
+  // Quantas unidades do grão-base (ex: ovos) 1 deste nível representa. 1 = o próprio grão-base
+  // ("Unidade"). Ex: Dúzia=12, Bandeja=30, Caixa=360.
+  quantidadeGrao Int
+  preco         Decimal  @db.Decimal(12, 2)
+  ehBase        Boolean  @default(false)
+  precoManual   Boolean  @default(false)
+  // Foto própria deste nível no card do PDV/catálogo — se vazio, usa a imagem do produto (ver
+  // resolução no frontend).
+  imagemUrl     String?
+  ativo         Boolean  @default(true)
+  createdAt     DateTime @default(now())
 
   itensVenda ItemVenda[]
 }
@@ -371,21 +372,18 @@ model ItemVenda {
   venda      Venda   @relation(fields: [vendaId], references: [id], onDelete: Cascade)
   produtoId  Int
   produto    Produto @relation(fields: [produtoId], references: [id])
+  // Quantidade DESTE NÍVEL vendida (ex: "2 caixas"), não em grão-base — ver
+  // quantidadeGraoPorNivel para o total em grão-base.
   quantidade Int
   precoUnit  Decimal @db.Decimal(12, 2)
 
-  // Preenchidos só quando o item foi vendido como uma embalagem fechada (ver
-  // EmbalagemProduto) — nesse caso quantidade é o número de embalagens vendidas (não de
-  // bandejas) e bandejasPorEmbalagem é o tamanho da embalagem travado no momento da venda,
-  // pra relatórios continuarem corretos mesmo se a embalagem for editada depois.
-  embalagemId          Int?
-  embalagem            EmbalagemProduto? @relation(fields: [embalagemId], references: [id])
-  bandejasPorEmbalagem Int?
-
-  // Vendido fracionado abaixo da "unidade" do produto (ex: 2 ovos soltos de uma dúzia) — só
-  // possível quando Produto.unidadesPorPacote > 1. Nesse caso quantidade já é a quantidade
-  // individual (mesmo grão do estoque), e precoUnit é o preço proporcional travado na venda.
-  vendidoPorUnidade Boolean @default(false)
+  // Nível de venda escolhido (ver NivelVendaProduto) — nullable só pra cobrir dado histórico
+  // migrado de antes deste modelo existir, sem um nível correspondente exato.
+  nivelVendaId Int?
+  nivelVenda   NivelVendaProduto? @relation(fields: [nivelVendaId], references: [id])
+  // Snapshot de NivelVendaProduto.quantidadeGrao no momento da venda — travado pra
+  // relatórios/estoque continuarem corretos mesmo se o nível for editado depois.
+  quantidadeGraoPorNivel Int?
 }
 
 model ContaReceber {

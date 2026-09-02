@@ -28,10 +28,10 @@ async function criar({ itens, observacao, criadoPorId }) {
     .map((i) => ({
       produtoId: Number(i.produtoId),
       quantidade: Number(i.quantidade),
-      // Presente quando o item foi recebido em caixas fechadas em vez de quantidade direta —
-      // "quantidade" acima vira o número de caixas, convertido pro grão-base do estoque
-      // (mesmo grão que a venda desconta) antes de guardar, ver abaixo.
-      embalagemId: i.embalagemId ? Number(i.embalagemId) : null,
+      // Presente quando o item foi recebido num nível maior que o grão-base (ex: caixa fechada)
+      // em vez de quantidade direta — "quantidade" acima vira o número desse nível, convertido
+      // pro grão-base do estoque (mesmo grão que a venda desconta) antes de guardar, ver abaixo.
+      nivelVendaId: i.nivelVendaId ? Number(i.nivelVendaId) : null,
       // Preço de custo é opcional e, se vier, vira o novo valor definitivo de Produto.precoCusto
       // (ver loop da transação abaixo) — deixar em branco no formulário significa "não mudar".
       precoCusto: i.precoCusto !== undefined && i.precoCusto !== null && i.precoCusto !== '' ? Number(i.precoCusto) : undefined,
@@ -48,9 +48,9 @@ async function criar({ itens, observacao, criadoPorId }) {
   }
 
   const produtos = await prisma.produto.findMany({ where: { id: { in: itensBrutos.map((i) => i.produtoId) } } });
-  const embalagemIds = itensBrutos.filter((i) => i.embalagemId).map((i) => i.embalagemId);
-  const embalagens = embalagemIds.length
-    ? await prisma.embalagemProduto.findMany({ where: { id: { in: embalagemIds } } })
+  const nivelIds = itensBrutos.filter((i) => i.nivelVendaId).map((i) => i.nivelVendaId);
+  const niveis = nivelIds.length
+    ? await prisma.nivelVendaProduto.findMany({ where: { id: { in: nivelIds } } })
     : [];
 
   const itensValidos = itensBrutos.map((item) => {
@@ -60,12 +60,12 @@ async function criar({ itens, observacao, criadoPorId }) {
     }
 
     let quantidadeBase = item.quantidade;
-    if (item.embalagemId) {
-      const embalagem = embalagens.find((e) => e.id === item.embalagemId && e.produtoId === produto.id);
-      if (!embalagem || !embalagem.ativo) {
-        throw Object.assign(new Error(`Caixa de "${produto.nome}" não encontrada`), { status: 400 });
+    if (item.nivelVendaId) {
+      const nivel = niveis.find((n) => n.id === item.nivelVendaId && n.produtoId === produto.id);
+      if (!nivel || !nivel.ativo) {
+        throw Object.assign(new Error(`Nível de venda de "${produto.nome}" não encontrado`), { status: 400 });
       }
-      quantidadeBase = item.quantidade * embalagem.quantidadeBandejas;
+      quantidadeBase = item.quantidade * nivel.quantidadeGrao;
     }
 
     return { produtoId: produto.id, quantidadeBase, precoCusto: item.precoCusto };
