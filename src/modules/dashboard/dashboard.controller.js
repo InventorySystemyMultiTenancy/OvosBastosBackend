@@ -349,20 +349,18 @@ async function resumo(req, res, next) {
       }))
       .sort((a, b) => b.receitas - a.receitas);
 
-    // Lucro Líquido de verdade desconta os dois: o que foi pago em despesas operacionais
-    // (ContaPagar) E o custo dos produtos vendidos (Produto.precoCusto) — antes só descontava
-    // despesas, o que inflava o número já que nunca contava o custo do que foi vendido.
+    // Lucro Líquido é só a margem dos itens vendidos: preço de venda menos custo cadastrado
+    // (Produto.precoCusto), por produto, somado no período. Despesas operacionais (ContaPagar)
+    // NÃO entram aqui — aparecem à parte no card "Gastos".
     const despesasPeriodoTotal = ehAdmin ? despesasPeriodo.reduce((s, c) => s + Number(c.valor), 0) : null;
     const custoProdutosPeriodo = ehAdmin ? lucroPorProduto.reduce((s, p) => s + (p.custoTotal || 0), 0) : null;
-    const lucroLiquidoPeriodo = ehAdmin ? faturamentoPeriodo - custoProdutosPeriodo - despesasPeriodoTotal : null;
+    const lucroLiquidoPeriodo = ehAdmin ? faturamentoPeriodo - custoProdutosPeriodo : null;
 
     const faturamentoPeriodoAnterior = Number(vendasPeriodoAnterior._sum.total || 0);
     const pedidosPeriodoAnterior = vendasPeriodoAnterior._count;
     const despesasPeriodoAnteriorTotal = ehAdmin ? Number(despesasPeriodoAnterior._sum.valor || 0) : null;
     const custoProdutosPeriodoAnterior = ehAdmin ? custoTotalDosItens(itensPeriodoAnterior) : null;
-    const lucroLiquidoPeriodoAnterior = ehAdmin
-      ? faturamentoPeriodoAnterior - custoProdutosPeriodoAnterior - despesasPeriodoAnteriorTotal
-      : null;
+    const lucroLiquidoPeriodoAnterior = ehAdmin ? faturamentoPeriodoAnterior - custoProdutosPeriodoAnterior : null;
 
     const variacaoFaturamentoPct = variacaoPct(faturamentoPeriodo, faturamentoPeriodoAnterior);
     const variacaoVendasPct = variacaoPct(pedidosPeriodo, pedidosPeriodoAnterior);
@@ -580,15 +578,17 @@ async function lucroPorUnidade(req, res, next) {
       if (dia) dia.custoProdutos += custo;
     });
 
+    // Lucro é só a margem dos itens vendidos (faturamento - custo dos produtos) — despesas
+    // ficam à parte, mostradas mas não descontadas daqui.
     const unidades = Object.values(mapaUnidades)
       .map((u) => ({
         unidade: u.unidade,
         faturamento: u.faturamento,
         despesas: u.despesas,
         custoProdutos: u.custoProdutos,
-        lucro: u.faturamento - u.custoProdutos - u.despesas,
+        lucro: u.faturamento - u.custoProdutos,
         pedidos: u.pedidos,
-        porDia: Object.values(u.porDia).map((d) => ({ ...d, lucro: d.faturamento - d.custoProdutos - d.despesas })),
+        porDia: Object.values(u.porDia).map((d) => ({ ...d, lucro: d.faturamento - d.custoProdutos })),
       }))
       .sort((a, b) => b.lucro - a.lucro);
 

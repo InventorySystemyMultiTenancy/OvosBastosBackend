@@ -501,12 +501,14 @@ async function relatorioPeriodo(req, res, next) {
     const custoProdutosTotal = custoTotalDosItens(itensVendidos);
     const faturamento = Number(vendasConfirmadas._sum.total || 0);
 
+    // Lucro é só a margem dos itens vendidos (faturamento - custo dos produtos) — despesas
+    // pagas ficam à parte, mostradas mas não descontadas do lucro.
     res.json({
       contasPagas,
       faturamento,
       despesasTotal,
       custoProdutosTotal,
-      lucro: faturamento - custoProdutosTotal - despesasTotal,
+      lucro: faturamento - custoProdutosTotal,
     });
   } catch (err) {
     next(err);
