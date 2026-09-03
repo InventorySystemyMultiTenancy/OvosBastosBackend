@@ -98,10 +98,11 @@ async function resumo(req, res, next) {
         select: {
           quantidade: true,
           precoUnit: true,
+          custoUnit: true,
           produtoId: true,
           nivelVendaId: true,
           quantidadeGraoPorNivel: true,
-          produto: { select: { nome: true, precoCusto: true } },
+          produto: { select: { nome: true } },
           venda: { select: { caixaId: true, caixa: { select: { nome: true, unidade: true } } } },
         },
       }),
@@ -154,7 +155,7 @@ async function resumo(req, res, next) {
             select: {
               quantidade: true,
               quantidadeGraoPorNivel: true,
-              produto: { select: { precoCusto: true } },
+              custoUnit: true,
             },
           })
         : Promise.resolve([]),
@@ -216,38 +217,50 @@ async function resumo(req, res, next) {
           ]
         : top7;
 
-    // Lucro por produto — venda menos custo cadastrado (Produto.precoCusto). Informação
+    // Lucro por produto — venda menos custo travado em cada venda (ItemVenda.custoUnit, não
+    // o Produto.precoCusto atual: assim um recebimento com preço novo do fornecedor não muda
+    // retroativamente o custo de vendas já feitas com o estoque antigo). Informação
     // financeira sensível, só pra admin (mesma regra de despesas/lucro líquido acima).
-    // Produtos sem custo cadastrado entram com precoCusto/lucro null em vez de assumir 0.
+    // Produtos sem custo travado em nenhuma venda do período entram com precoCusto/lucro
+    // null em vez de assumir 0.
     let lucroPorProduto = [];
     if (ehAdmin) {
       const mapaLucroProdutos = {};
       itensPeriodo.forEach((i) => {
         if (!mapaLucroProdutos[i.produtoId]) {
-          // precoCusto já vem em grão-base (mesmo grão de "quantidade", via unidadesVendidas).
           mapaLucroProdutos[i.produtoId] = {
             produtoId: i.produtoId,
             nome: i.produto.nome,
-            precoCusto: i.produto.precoCusto !== null ? Number(i.produto.precoCusto) : null,
             quantidade: 0,
             receita: 0,
+            custoTotal: 0,
+            quantidadeComCusto: 0,
           };
         }
         const item = mapaLucroProdutos[i.produtoId];
-        item.quantidade += unidadesVendidas(i);
+        const grao = unidadesVendidas(i);
+        item.quantidade += grao;
         item.receita += i.quantidade * Number(i.precoUnit);
+        if (i.custoUnit !== null && i.custoUnit !== undefined) {
+          item.custoTotal += Number(i.custoUnit) * grao;
+          item.quantidadeComCusto += grao;
+        }
       });
       lucroPorProduto = Object.values(mapaLucroProdutos)
         .map((p) => {
           const precoVendaMedio = p.quantidade > 0 ? p.receita / p.quantidade : 0;
-          const custoTotal = p.precoCusto !== null ? p.precoCusto * p.quantidade : null;
+          const temCusto = p.quantidadeComCusto > 0;
+          const custoTotal = temCusto ? p.custoTotal : null;
+          // Custo médio real do período (pode misturar custo antigo e novo se o produto foi
+          // reabastecido a um preço diferente no meio do período), não o custo atual do produto.
+          const precoCustoMedio = temCusto ? p.custoTotal / p.quantidadeComCusto : null;
           return {
             produtoId: p.produtoId,
             nome: p.nome,
             quantidade: p.quantidade,
             precoVenda: precoVendaMedio,
-            precoCusto: p.precoCusto,
-            lucroUnitario: p.precoCusto !== null ? precoVendaMedio - p.precoCusto : null,
+            precoCusto: precoCustoMedio,
+            lucroUnitario: precoCustoMedio !== null ? precoVendaMedio - precoCustoMedio : null,
             receita: p.receita,
             custoTotal,
             lucroTotal: custoTotal !== null ? p.receita - custoTotal : null,
@@ -343,9 +356,9 @@ async function resumo(req, res, next) {
       }))
       .sort((a, b) => b.receitas - a.receitas);
 
-    // Lucro Líquido é só a margem dos itens vendidos: preço de venda menos custo cadastrado
-    // (Produto.precoCusto), por produto, somado no período. Despesas operacionais (ContaPagar)
-    // NÃO entram aqui — aparecem à parte no card "Gastos".
+    // Lucro Líquido é só a margem dos itens vendidos: preço de venda menos custo travado em
+    // cada venda (ItemVenda.custoUnit), por produto, somado no período. Despesas operacionais
+    // (ContaPagar) NÃO entram aqui — aparecem à parte no card "Gastos".
     const despesasPeriodoTotal = ehAdmin ? despesasPeriodo.reduce((s, c) => s + Number(c.valor), 0) : null;
     const custoProdutosPeriodo = ehAdmin ? lucroPorProduto.reduce((s, p) => s + (p.custoTotal || 0), 0) : null;
     const lucroLiquidoPeriodo = ehAdmin ? faturamentoPeriodo - custoProdutosPeriodo : null;
@@ -515,14 +528,16 @@ async function lucroPorUnidade(req, res, next) {
         where: { pago: true, pagoEm: { gte: desde, lte: ate } },
         select: { valor: true, pagoEm: true, caixa: { select: { unidade: true } } },
       }),
-      // Custo dos produtos vendidos (Produto.precoCusto) — o Lucro Líquido desconta isso
-      // além das despesas, senão o número não reflete o que realmente sobrou.
+      // Custo dos produtos vendidos, travado em cada venda (ItemVenda.custoUnit) — o Lucro
+      // Líquido desconta isso além das despesas, senão o número não reflete o que realmente
+      // sobrou, e usar o custo travado em vez do Produto.precoCusto atual evita que um
+      // recebimento com preço novo mude retroativamente vendas já feitas.
       prisma.itemVenda.findMany({
         where: { venda: { status: 'CONFIRMADA', confirmadaEm: { gte: desde, lte: ate } } },
         select: {
           quantidade: true,
           quantidadeGraoPorNivel: true,
-          produto: { select: { precoCusto: true } },
+          custoUnit: true,
           venda: { select: { confirmadaEm: true, caixa: { select: { unidade: true } } } },
         },
       }),
@@ -561,9 +576,9 @@ async function lucroPorUnidade(req, res, next) {
     });
 
     itensPeriodo.forEach((i) => {
-      if (i.produto.precoCusto === null) return;
+      if (i.custoUnit === null || i.custoUnit === undefined) return;
       const bloco = unidadeDe(i.venda);
-      const custo = Number(i.produto.precoCusto) * unidadesVendidas(i);
+      const custo = Number(i.custoUnit) * unidadesVendidas(i);
       bloco.custoProdutos += custo;
       const dia = bloco.porDia[chaveDia(i.venda.confirmadaEm)];
       if (dia) dia.custoProdutos += custo;

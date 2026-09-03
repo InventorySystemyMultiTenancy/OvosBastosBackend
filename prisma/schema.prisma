@@ -383,7 +383,13 @@ model ItemVenda {
   nivelVenda   NivelVendaProduto? @relation(fields: [nivelVendaId], references: [id])
   // Snapshot de NivelVendaProduto.quantidadeGrao no momento da venda — travado pra
   // relatórios/estoque continuarem corretos mesmo se o nível for editado depois.
-  quantidadeGraoPorNivel Int?
+  quantidadeGraoPorNivel Int
+
+  // Snapshot de Produto.precoCusto (por grão-base) no momento da venda. Sem isso, mudar o
+  // custo de um produto num recebimento novo mudaria retroativamente o custo — e o Lucro
+  // Líquido — de vendas já feitas com o estoque antigo, mais barato. Custo de venda antiga
+  // sempre usa o custo que valia quando ela aconteceu (ver custoVenda.js).
+  custoUnit Decimal? @db.Decimal(12, 2)
 }
 
 model ContaReceber {

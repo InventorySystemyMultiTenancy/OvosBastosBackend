@@ -483,14 +483,16 @@ async function relatorioPeriodo(req, res, next) {
         where: { status: 'CONFIRMADA', confirmadaEm: { gte: inicio, lte: fim } },
         _sum: { total: true },
       }),
-      // Custo dos produtos vendidos (Produto.precoCusto) — o lucro desconta isso além das
-      // despesas operacionais, senão o número não reflete o que realmente sobrou.
+      // Custo dos produtos vendidos, travado em cada venda (ItemVenda.custoUnit, não o
+      // Produto.precoCusto atual — um recebimento com preço novo não deve mudar
+      // retroativamente vendas já feitas) — o lucro desconta isso além das despesas
+      // operacionais, senão o número não reflete o que realmente sobrou.
       prisma.itemVenda.findMany({
         where: { venda: { status: 'CONFIRMADA', confirmadaEm: { gte: inicio, lte: fim } } },
         select: {
           quantidade: true,
           quantidadeGraoPorNivel: true,
-          produto: { select: { precoCusto: true } },
+          custoUnit: true,
         },
       }),
     ]);

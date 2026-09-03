@@ -10,13 +10,16 @@ function unidadesVendidas(item) {
   return item.quantidade * item.quantidadeGraoPorNivel;
 }
 
-// Soma o custo (Produto.precoCusto, já em grão-base) de uma lista de itens de venda. Item sem
-// precoCusto cadastrado não entra na soma (custo desconhecido != zero) — é assim que o Lucro
-// Líquido desconta custo de produto, não só despesas operacionais.
+// Soma o custo de uma lista de itens de venda, usando SEMPRE o custo travado na própria venda
+// (ItemVenda.custoUnit, por grão-base) — nunca o Produto.precoCusto atual. Assim, mudar o
+// custo de um produto num recebimento novo (preço novo do fornecedor) não muda
+// retroativamente o custo — nem o Lucro Líquido — de vendas já feitas com o estoque antigo,
+// mais barato; cada venda sempre é calculada a partir do custo que valia quando ela aconteceu.
+// Item sem custo travado não entra na soma (custo desconhecido != zero).
 function custoTotalDosItens(itens) {
   return itens.reduce((soma, i) => {
-    if (i.produto.precoCusto === null) return soma;
-    return soma + Number(i.produto.precoCusto) * unidadesVendidas(i);
+    if (i.custoUnit === null || i.custoUnit === undefined) return soma;
+    return soma + Number(i.custoUnit) * unidadesVendidas(i);
   }, 0);
 }
 

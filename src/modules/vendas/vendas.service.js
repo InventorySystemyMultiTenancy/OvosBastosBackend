@@ -111,6 +111,10 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
       precoUnit,
       nivelVendaId: nivel.id,
       quantidadeGraoPorNivel,
+      // Trava o custo (por grão-base) que valia agora — editar Produto.precoCusto depois
+      // (ex: num recebimento com preço novo do fornecedor) não deve mudar retroativamente
+      // o custo desta venda.
+      custoUnit: produto.precoCusto,
       nome: produto.nome,
     };
   });
@@ -148,12 +152,13 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
         total,
         confirmadaEm: viaMaquininha ? null : new Date(),
         itens: {
-          create: itensComPreco.map(({ produtoId, quantidade, precoUnit, nivelVendaId, quantidadeGraoPorNivel }) => ({
+          create: itensComPreco.map(({ produtoId, quantidade, precoUnit, nivelVendaId, quantidadeGraoPorNivel, custoUnit }) => ({
             produtoId,
             quantidade,
             precoUnit,
             nivelVendaId,
             quantidadeGraoPorNivel,
+            custoUnit,
           })),
         },
       },
