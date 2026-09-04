@@ -103,6 +103,7 @@ async function resumo(req, res, next) {
           nivelVendaId: true,
           quantidadeGraoPorNivel: true,
           produto: { select: { nome: true } },
+          nivelVenda: { select: { nome: true } },
           venda: { select: { caixaId: true, caixa: { select: { nome: true, unidade: true } } } },
         },
       }),
@@ -235,37 +236,71 @@ async function resumo(req, res, next) {
             receita: 0,
             custoTotal: 0,
             quantidadeComCusto: 0,
+            niveis: {},
           };
         }
-        const item = mapaLucroProdutos[i.produtoId];
+        const produto = mapaLucroProdutos[i.produtoId];
         const grao = unidadesVendidas(i);
-        item.quantidade += grao;
-        item.receita += i.quantidade * Number(i.precoUnit);
-        if (i.custoUnit !== null && i.custoUnit !== undefined) {
-          item.custoTotal += Number(i.custoUnit) * grao;
-          item.quantidadeComCusto += grao;
+        const receitaLinha = i.quantidade * Number(i.precoUnit);
+        const temCustoLinha = i.custoUnit !== null && i.custoUnit !== undefined;
+        const custoLinha = temCustoLinha ? Number(i.custoUnit) * grao : 0;
+
+        produto.quantidade += grao;
+        produto.receita += receitaLinha;
+        if (temCustoLinha) {
+          produto.custoTotal += custoLinha;
+          produto.quantidadeComCusto += grao;
+        }
+
+        // Mesmo produto pode vender por mais de um nível (Unidade/Dúzia/Bandeja/Caixa) — a
+        // aba de Lucro por Produto detalha cada um separado, não só o total do produto.
+        const chaveNivel = i.nivelVendaId ?? 'sem-nivel';
+        if (!produto.niveis[chaveNivel]) {
+          produto.niveis[chaveNivel] = {
+            nivelVendaId: i.nivelVendaId,
+            nome: i.nivelVenda?.nome || 'Sem nível',
+            quantidade: 0,
+            receita: 0,
+            custoTotal: 0,
+            quantidadeComCusto: 0,
+          };
+        }
+        const nivel = produto.niveis[chaveNivel];
+        nivel.quantidade += grao;
+        nivel.receita += receitaLinha;
+        if (temCustoLinha) {
+          nivel.custoTotal += custoLinha;
+          nivel.quantidadeComCusto += grao;
         }
       });
+
+      // Custo médio real do bloco no período (pode misturar custo antigo e novo se o produto
+      // foi reabastecido a um preço diferente no meio do período), não o custo atual cadastrado.
+      const resumoDoBloco = (bloco) => {
+        const precoVendaMedio = bloco.quantidade > 0 ? bloco.receita / bloco.quantidade : 0;
+        const temCusto = bloco.quantidadeComCusto > 0;
+        const custoTotal = temCusto ? bloco.custoTotal : null;
+        const precoCustoMedio = temCusto ? bloco.custoTotal / bloco.quantidadeComCusto : null;
+        return {
+          quantidade: bloco.quantidade,
+          precoVenda: precoVendaMedio,
+          precoCusto: precoCustoMedio,
+          lucroUnitario: precoCustoMedio !== null ? precoVendaMedio - precoCustoMedio : null,
+          receita: bloco.receita,
+          custoTotal,
+          lucroTotal: custoTotal !== null ? bloco.receita - custoTotal : null,
+        };
+      };
+
       lucroPorProduto = Object.values(mapaLucroProdutos)
-        .map((p) => {
-          const precoVendaMedio = p.quantidade > 0 ? p.receita / p.quantidade : 0;
-          const temCusto = p.quantidadeComCusto > 0;
-          const custoTotal = temCusto ? p.custoTotal : null;
-          // Custo médio real do período (pode misturar custo antigo e novo se o produto foi
-          // reabastecido a um preço diferente no meio do período), não o custo atual do produto.
-          const precoCustoMedio = temCusto ? p.custoTotal / p.quantidadeComCusto : null;
-          return {
-            produtoId: p.produtoId,
-            nome: p.nome,
-            quantidade: p.quantidade,
-            precoVenda: precoVendaMedio,
-            precoCusto: precoCustoMedio,
-            lucroUnitario: precoCustoMedio !== null ? precoVendaMedio - precoCustoMedio : null,
-            receita: p.receita,
-            custoTotal,
-            lucroTotal: custoTotal !== null ? p.receita - custoTotal : null,
-          };
-        })
+        .map((p) => ({
+          produtoId: p.produtoId,
+          nome: p.nome,
+          ...resumoDoBloco(p),
+          niveis: Object.values(p.niveis)
+            .map((n) => ({ nivelVendaId: n.nivelVendaId, nome: n.nome, ...resumoDoBloco(n) }))
+            .sort((a, b) => (b.lucroTotal ?? -Infinity) - (a.lucroTotal ?? -Infinity)),
+        }))
         .sort((a, b) => (b.lucroTotal ?? -Infinity) - (a.lucroTotal ?? -Infinity));
     }
 
