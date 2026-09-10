@@ -8,7 +8,7 @@ const INCLUDE_PADRAO = {
   vendedor: { select: { id: true, nome: true } },
   caixa: { select: { id: true, nome: true, unidade: true, ativo: true } },
   itens: { include: { produto: true, nivelVenda: true } },
-  pagamentoPointMP: true,
+  pagamentosPointMP: { orderBy: { createdAt: 'asc' } },
 };
 
 async function listar(req, res, next) {
@@ -101,8 +101,8 @@ async function confirmar(req, res, next) {
 
 async function pagarMaquininha(req, res, next) {
   try {
-    const pagamento = await mpService.enviarCobranca(req.params.id);
-    res.status(201).json(pagamento);
+    const resultado = await mpService.enviarCobranca(req.params.id, req.body.valor);
+    res.status(201).json(resultado);
   } catch (err) {
     next(err);
   }
@@ -110,8 +110,8 @@ async function pagarMaquininha(req, res, next) {
 
 async function cancelarPagamentoMaquininha(req, res, next) {
   try {
-    const pagamento = await mpService.cancelarCobranca(req.params.id);
-    res.json(pagamento);
+    const resultado = await mpService.cancelarCobranca(req.params.id);
+    res.json(resultado);
   } catch (err) {
     next(err);
   }
@@ -119,8 +119,8 @@ async function cancelarPagamentoMaquininha(req, res, next) {
 
 async function statusPagamentoMaquininha(req, res, next) {
   try {
-    const pagamento = await mpService.sincronizarStatus(req.params.id);
-    res.json(pagamento);
+    const resultado = await mpService.listarStatusPagamentos(req.params.id);
+    res.json(resultado);
   } catch (err) {
     next(err);
   }
@@ -129,16 +129,27 @@ async function statusPagamentoMaquininha(req, res, next) {
 async function cancelar(req, res, next) {
   try {
     const id = Number(req.params.id);
-    const venda = await prisma.venda.findUnique({ where: { id }, include: { pagamentoPointMP: true } });
+    const venda = await prisma.venda.findUnique({ where: { id }, include: { pagamentosPointMP: true } });
     if (!venda) return res.status(404).json({ error: 'Venda não encontrada' });
     if (venda.status !== 'ORCAMENTO') {
       return res.status(400).json({ error: 'Somente orçamentos podem ser cancelados' });
     }
 
+    // Pagamento dividido entre duas cobranças (débito + crédito): se uma já foi aprovada e a
+    // venda for cancelada antes da segunda, o valor já capturado no cartão do cliente ficaria
+    // sem nenhuma venda associada (não há estorno automático aqui) — trava o cancelamento.
+    const cobrancaAprovada = venda.pagamentosPointMP.find((p) => p.status === 'APROVADO');
+    if (cobrancaAprovada) {
+      return res.status(409).json({
+        error: `Esta venda já tem um pagamento de R$ ${Number(cobrancaAprovada.valor).toFixed(2)} aprovado na maquininha — cancelar deixaria esse valor capturado no cartão do cliente sem venda associada. Estorne o pagamento no painel do Mercado Pago antes de cancelar, ou confirme a venda manualmente.`,
+      });
+    }
+
     // Cancelar a venda sem liberar a maquininha deixa o device travado com o intent aberto
     // (erro 2205 do Mercado Pago na próxima cobrança). Se falhar, segue cancelando a venda mesmo
     // assim e só loga — o usuário pode tentar cancelar a cobrança de novo depois.
-    if (venda.pagamentoPointMP && ['PENDENTE', 'EM_PROCESSO'].includes(venda.pagamentoPointMP.status)) {
+    const cobrancaAtiva = venda.pagamentosPointMP.find((p) => ['PENDENTE', 'EM_PROCESSO'].includes(p.status));
+    if (cobrancaAtiva) {
       await mpService.cancelarCobranca(id).catch((err) => {
         console.error(`Falha ao cancelar cobrança Mercado Pago da venda ${id} ao cancelar a venda:`, err.message);
       });
@@ -181,6 +192,9 @@ async function comprovante(req, res, next) {
       total: venda.total,
       formaPagamento: venda.formaPagamento,
       valorDinheiro: venda.valorDinheiro,
+      pagamentosMaquininha: venda.pagamentosPointMP
+        .filter((p) => p.status === 'APROVADO')
+        .map((p) => ({ valor: p.valor, createdAt: p.createdAt })),
       status: venda.status,
     });
   } catch (err) {

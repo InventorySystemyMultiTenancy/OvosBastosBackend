@@ -6,7 +6,7 @@ const INCLUDE_PADRAO = {
   vendedor: { select: { id: true, nome: true } },
   caixa: { select: { id: true, nome: true, unidade: true, ativo: true } },
   itens: { include: { produto: true, nivelVenda: true } },
-  pagamentoPointMP: true,
+  pagamentosPointMP: { orderBy: { createdAt: 'asc' } },
 };
 
 function calcularTotal(itensComPreco, desconto, acrescimo = 0) {

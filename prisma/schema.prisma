@@ -292,9 +292,9 @@ model Venda {
   createdAt      DateTime        @default(now())
   confirmadaEm   DateTime?
 
-  itens            ItemVenda[]
-  contaReceber     ContaReceber?
-  pagamentoPointMP PagamentoPointMP?
+  itens             ItemVenda[]
+  contaReceber      ContaReceber?
+  pagamentosPointMP PagamentoPointMP[]
 }
 
 model Caixa {
@@ -351,9 +351,12 @@ model SessaoCaixa {
   @@index([caixaId, fechadaEm])
 }
 
+// Uma venda pode ter várias linhas aqui: pagamento dividido entre débito e crédito (ou mais
+// partes) manda mais de uma cobrança sequencial pro mesmo terminal, uma de cada vez — ver
+// mercadopago.service.enviarCobranca/verificarQuitacaoEConfirmar. vendaId não é mais @unique.
 model PagamentoPointMP {
   id              Int                    @id @default(autoincrement())
-  vendaId         Int                    @unique
+  vendaId         Int
   venda           Venda                  @relation(fields: [vendaId], references: [id], onDelete: Cascade)
   caixaId         Int
   caixa           Caixa                  @relation(fields: [caixaId], references: [id])
@@ -364,6 +367,8 @@ model PagamentoPointMP {
   detalhes        Json?
   createdAt       DateTime               @default(now())
   updatedAt       DateTime               @updatedAt
+
+  @@index([vendaId, status])
 }
 
 model ItemVenda {
