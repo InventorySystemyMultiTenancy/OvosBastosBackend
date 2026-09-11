@@ -124,13 +124,13 @@ model PrecoFornecedor {
 }
 
 model Produto {
-  id   Int     @id @default(autoincrement())
-  nome String
-  tipo String?
+  id            Int      @id @default(autoincrement())
+  nome          String
+  tipo          String?
   // Preço de custo, sempre por grão-base (o grão mais fino vendável deste produto, ex: 1 ovo
   // — ver NivelVendaProduto). Cadastrado na tela "por nível de referência" e convertido pra
   // grão-base ao salvar (ver produtos.controller.js).
-  precoCusto Decimal? @db.Decimal(12, 2)
+  precoCusto    Decimal? @db.Decimal(12, 2)
   // Pool central de estoque "recebido e ainda não distribuído" às unidades — não é mais
   // "estoque disponível para venda" quando a venda tem caixa associada (ver EstoqueCaixa).
   // Sempre contado em grão-base (o menor grão vendável do produto — ver NivelVendaProduto).
@@ -158,21 +158,21 @@ model Produto {
 // ou toda "caixa fechada" com desconto por atacado) para de seguir esse recálculo até alguém
 // clicar em "recalcular".
 model NivelVendaProduto {
-  id            Int      @id @default(autoincrement())
-  produtoId     Int
-  produto       Produto  @relation(fields: [produtoId], references: [id], onDelete: Cascade)
-  nome          String
+  id             Int      @id @default(autoincrement())
+  produtoId      Int
+  produto        Produto  @relation(fields: [produtoId], references: [id], onDelete: Cascade)
+  nome           String
   // Quantas unidades do grão-base (ex: ovos) 1 deste nível representa. 1 = o próprio grão-base
   // ("Unidade"). Ex: Dúzia=12, Bandeja=30, Caixa=360.
   quantidadeGrao Int
-  preco         Decimal  @db.Decimal(12, 2)
-  ehBase        Boolean  @default(false)
-  precoManual   Boolean  @default(false)
+  preco          Decimal  @db.Decimal(12, 2)
+  ehBase         Boolean  @default(false)
+  precoManual    Boolean  @default(false)
   // Foto própria deste nível no card do PDV/catálogo — se vazio, usa a imagem do produto (ver
   // resolução no frontend).
-  imagemUrl     String?
-  ativo         Boolean  @default(true)
-  createdAt     DateTime @default(now())
+  imagemUrl      String?
+  ativo          Boolean  @default(true)
+  createdAt      DateTime @default(now())
 
   itensVenda ItemVenda[]
 }
@@ -355,18 +355,24 @@ model SessaoCaixa {
 // partes) manda mais de uma cobrança sequencial pro mesmo terminal, uma de cada vez — ver
 // mercadopago.service.enviarCobranca/verificarQuitacaoEConfirmar. vendaId não é mais @unique.
 model PagamentoPointMP {
-  id              Int                    @id @default(autoincrement())
-  vendaId         Int
-  venda           Venda                  @relation(fields: [vendaId], references: [id], onDelete: Cascade)
-  caixaId         Int
-  caixa           Caixa                  @relation(fields: [caixaId], references: [id])
-  deviceId        String
-  paymentIntentId String                 @unique
-  status          StatusPagamentoPointMP @default(PENDENTE)
-  valor           Decimal                @db.Decimal(12, 2)
-  detalhes        Json?
-  createdAt       DateTime               @default(now())
-  updatedAt       DateTime               @updatedAt
+  id                     Int                    @id @default(autoincrement())
+  vendaId                Int
+  venda                  Venda                  @relation(fields: [vendaId], references: [id], onDelete: Cascade)
+  caixaId                Int
+  caixa                  Caixa                  @relation(fields: [caixaId], references: [id])
+  deviceId               String
+  paymentIntentId        String                 @unique
+  status                 StatusPagamentoPointMP @default(PENDENTE)
+  valor                  Decimal                @db.Decimal(12, 2)
+  detalhes               Json?
+  // Tipo real do meio de pagamento usado no aparelho (ex: "credit_card", "debit_card"),
+  // extraído de detalhes.transactions.payments[0].payment_method.type quando a cobrança é
+  // aprovada — ver mercadopago.service.aplicarStatusIntent. Null pra cobranças ainda não
+  // resolvidas ou de antes desse campo existir. Alimenta o fechamento do dia (dashboard),
+  // que sem isso não teria como separar crédito de débito.
+  tipoPagamentoDetectado String?
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
 
   @@index([vendaId, status])
 }
@@ -384,8 +390,8 @@ model ItemVenda {
 
   // Nível de venda escolhido (ver NivelVendaProduto) — nullable só pra cobrir dado histórico
   // migrado de antes deste modelo existir, sem um nível correspondente exato.
-  nivelVendaId Int?
-  nivelVenda   NivelVendaProduto? @relation(fields: [nivelVendaId], references: [id])
+  nivelVendaId           Int?
+  nivelVenda             NivelVendaProduto? @relation(fields: [nivelVendaId], references: [id])
   // Snapshot de NivelVendaProduto.quantidadeGrao no momento da venda — travado pra
   // relatórios/estoque continuarem corretos mesmo se o nível for editado depois.
   quantidadeGraoPorNivel Int

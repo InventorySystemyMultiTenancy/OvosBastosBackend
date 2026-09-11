@@ -474,6 +474,84 @@ async function resumo(req, res, next) {
   }
 }
 
+const FORMAS_PAGAMENTO_SIMPLES = ['PIX', 'DINHEIRO', 'BOLETO', 'FIADO'];
+
+// Resumo pra fechar o dia (botão no topo do dashboard, só admin): faturamento, lucro líquido
+// e quanto entrou em cada forma de pagamento — cartão é dividido em crédito/débito usando o
+// tipo real que a maquininha reportou (PagamentoPointMP.tipoPagamentoDetectado); vendas
+// confirmadas com CARTAO mas sem nenhuma cobrança de maquininha associada (ex: confirmadas
+// manualmente, sem integração) caem em "outro" por não ter como saber o tipo.
+async function fechamentoDia(req, res, next) {
+  try {
+    const inicioHoje = new Date();
+    inicioHoje.setHours(0, 0, 0, 0);
+
+    const [vendasHoje, itensHoje] = await Promise.all([
+      prisma.venda.findMany({
+        where: { status: 'CONFIRMADA', confirmadaEm: { gte: inicioHoje } },
+        select: {
+          total: true,
+          formaPagamento: true,
+          valorDinheiro: true,
+          pagamentosPointMP: {
+            where: { status: 'APROVADO' },
+            select: { valor: true, tipoPagamentoDetectado: true },
+          },
+        },
+      }),
+      prisma.itemVenda.findMany({
+        where: { venda: { status: 'CONFIRMADA', confirmadaEm: { gte: inicioHoje } } },
+        select: { quantidade: true, quantidadeGraoPorNivel: true, custoUnit: true },
+      }),
+    ]);
+
+    const totais = {
+      PIX: 0,
+      DINHEIRO: 0,
+      CARTAO_CREDITO: 0,
+      CARTAO_DEBITO: 0,
+      CARTAO_OUTRO: 0,
+      BOLETO: 0,
+      FIADO: 0,
+    };
+
+    vendasHoje.forEach((v) => {
+      const total = Number(v.total);
+      const dinheiro = Number(v.valorDinheiro || 0);
+      if (dinheiro > 0) totais.DINHEIRO += dinheiro;
+
+      if (v.formaPagamento === 'CARTAO') {
+        if (v.pagamentosPointMP.length > 0) {
+          v.pagamentosPointMP.forEach((p) => {
+            const valor = Number(p.valor);
+            if (p.tipoPagamentoDetectado === 'credit_card') totais.CARTAO_CREDITO += valor;
+            else if (p.tipoPagamentoDetectado === 'debit_card') totais.CARTAO_DEBITO += valor;
+            else totais.CARTAO_OUTRO += valor;
+          });
+        } else {
+          totais.CARTAO_OUTRO += total - dinheiro;
+        }
+      } else if (FORMAS_PAGAMENTO_SIMPLES.includes(v.formaPagamento)) {
+        totais[v.formaPagamento] += total;
+      }
+    });
+
+    const faturamento = vendasHoje.reduce((soma, v) => soma + Number(v.total), 0);
+    const custoProdutos = custoTotalDosItens(itensHoje);
+
+    res.json({
+      data: inicioHoje,
+      faturamento,
+      custoProdutos,
+      lucroLiquido: faturamento - custoProdutos,
+      quantidadeVendas: vendasHoje.length,
+      porFormaPagamento: totais,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // Quanto cada unidade precisa receber de volta pra voltar ao estoque que tinha no início do
 // mês. Reconstruído a partir do razão de MovimentacaoEstoque (sem precisar guardar um
 // snapshot): estoque no início do mês = estoque atual - entradas do mês + saídas do mês,
@@ -679,4 +757,4 @@ async function estoquePorUnidade(req, res, next) {
   }
 }
 
-module.exports = { resumo, reposicaoMensal, lucroPorUnidade, estoquePorUnidade };
+module.exports = { resumo, reposicaoMensal, lucroPorUnidade, estoquePorUnidade, fechamentoDia };

@@ -319,10 +319,18 @@ function mapearStatus(orderStatus) {
 
 async function aplicarStatusIntent(pagamento, order) {
   const novoStatus = mapearStatus(order.status);
+  // Tipo real do meio de pagamento (credit_card/debit_card/...) só vem preenchido depois que
+  // o pagamento é processado — alimenta o fechamento do dia (dashboard). Nunca sobrescreve um
+  // valor já detectado com null (uma reconsulta antes do terminal processar não deve apagar).
+  const tipoDetectado = order?.transactions?.payments?.[0]?.payment_method?.type;
 
   const atualizado = await prisma.pagamentoPointMP.update({
     where: { id: pagamento.id },
-    data: { status: novoStatus, detalhes: order },
+    data: {
+      status: novoStatus,
+      detalhes: order,
+      ...(tipoDetectado ? { tipoPagamentoDetectado: tipoDetectado } : {}),
+    },
   });
 
   if (novoStatus === 'APROVADO' && pagamento.status !== 'APROVADO') {

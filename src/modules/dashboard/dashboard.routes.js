@@ -8,5 +8,6 @@ router.get('/', authenticate, ctrl.resumo);
 router.get('/reposicao-mensal', authenticate, ctrl.reposicaoMensal);
 router.get('/estoque-por-unidade', authenticate, ctrl.estoquePorUnidade);
 router.get('/lucro-por-unidade', authenticate, requireRole('ADMIN'), ctrl.lucroPorUnidade);
+router.get('/fechamento-dia', authenticate, requireRole('ADMIN'), ctrl.fechamentoDia);
 
 module.exports = router;
