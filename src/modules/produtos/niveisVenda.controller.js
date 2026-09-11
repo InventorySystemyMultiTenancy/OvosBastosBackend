@@ -1,5 +1,6 @@
 const prisma = require('../../config/db');
 const cloudinary = require('../../config/cloudinary');
+const { registrarAlteracoes } = require('../../utils/historicoAlteracao');
 
 // Um nível de venda é um jeito vendável de embalar o mesmo produto (Unidade/Dúzia/Bandeja/
 // Caixa) — não tem estoque próprio, todos descontam do mesmo estoque em grão-base do Produto
@@ -12,18 +13,26 @@ function arredondarMoeda(valor) {
 }
 
 // Recalcula (e grava) o preço de todo nível ativo, não-base e não travado manualmente
-// (precoManual=false) do produto, proporcional ao nível base informado.
-async function recalcularDerivados(tx, produtoId, base, { excetoId } = {}) {
+// (precoManual=false) do produto, proporcional ao nível base informado. Cada nível afetado
+// gera sua própria linha de histórico — é uma alteração de verdade no preço dele, mesmo que
+// disparada de longe por uma edição no nível base.
+async function recalcularDerivados(tx, produtoId, base, { excetoId, usuarioId, motivo } = {}) {
   const niveis = await tx.nivelVendaProduto.findMany({
     where: { produtoId, ativo: true, precoManual: false, id: { not: excetoId || base.id } },
   });
   await Promise.all(
-    niveis.map((n) =>
-      tx.nivelVendaProduto.update({
-        where: { id: n.id },
-        data: { preco: arredondarMoeda((Number(base.preco) / base.quantidadeGrao) * n.quantidadeGrao) },
-      })
-    )
+    niveis.map(async (n) => {
+      const precoNovo = arredondarMoeda((Number(base.preco) / base.quantidadeGrao) * n.quantidadeGrao);
+      await tx.nivelVendaProduto.update({ where: { id: n.id }, data: { preco: precoNovo } });
+      await registrarAlteracoes(tx, {
+        produtoId,
+        entidade: 'NivelVendaProduto',
+        entidadeId: n.id,
+        usuarioId,
+        motivo: motivo || `Recalculado a partir do nível "${base.nome}"`,
+        alteracoes: [{ campo: 'preco', valorAntigo: n.preco, valorNovo: precoNovo }],
+      });
+    })
   );
 }
 
@@ -99,12 +108,28 @@ async function atualizar(req, res, next) {
       if (!nivel.ehBase) data.precoManual = true;
     }
 
+    const usuarioId = req.usuario?.id;
+
     const atualizado = await prisma.$transaction(async (tx) => {
       const salvo = await tx.nivelVendaProduto.update({ where: { id: nivelId }, data });
+      await registrarAlteracoes(tx, {
+        produtoId,
+        entidade: 'NivelVendaProduto',
+        entidadeId: nivelId,
+        usuarioId,
+        alteracoes: [
+          { campo: 'nome', valorAntigo: nivel.nome, valorNovo: salvo.nome },
+          { campo: 'quantidadeGrao', valorAntigo: nivel.quantidadeGrao, valorNovo: salvo.quantidadeGrao },
+          { campo: 'preco', valorAntigo: nivel.preco, valorNovo: salvo.preco },
+        ],
+      });
       // Preço ou o próprio tamanho do nível base mudou — a proporção usada pra derivar os
       // outros níveis mudou junto, então todos precisam ser recalculados de novo.
       if (salvo.ehBase && (preco !== undefined || quantidadeGrao !== undefined)) {
-        await recalcularDerivados(tx, produtoId, salvo);
+        await recalcularDerivados(tx, produtoId, salvo, {
+          usuarioId,
+          motivo: `Recalculado após alterar o nível de referência "${salvo.nome}"`,
+        });
       }
       return salvo;
     });
@@ -127,6 +152,9 @@ async function definirBase(req, res, next) {
       return res.status(404).json({ error: 'Nível não encontrado' });
     }
 
+    const usuarioId = req.usuario?.id;
+    const baseAntiga = await prisma.nivelVendaProduto.findFirst({ where: { produtoId, ehBase: true, ativo: true } });
+
     const atualizado = await prisma.$transaction(async (tx) => {
       await tx.nivelVendaProduto.updateMany({
         where: { produtoId, ehBase: true, id: { not: nivelId } },
@@ -136,7 +164,30 @@ async function definirBase(req, res, next) {
         where: { id: nivelId },
         data: { ehBase: true, precoManual: true },
       });
-      await recalcularDerivados(tx, produtoId, novaBase);
+
+      if (baseAntiga && baseAntiga.id !== nivelId) {
+        await registrarAlteracoes(tx, {
+          produtoId,
+          entidade: 'NivelVendaProduto',
+          entidadeId: baseAntiga.id,
+          usuarioId,
+          motivo: `Substituído por "${novaBase.nome}" como nível de referência`,
+          alteracoes: [{ campo: 'ehBase', valorAntigo: true, valorNovo: false }],
+        });
+      }
+      await registrarAlteracoes(tx, {
+        produtoId,
+        entidade: 'NivelVendaProduto',
+        entidadeId: nivelId,
+        usuarioId,
+        motivo: 'Definido como novo nível de referência',
+        alteracoes: [{ campo: 'ehBase', valorAntigo: nivel.ehBase, valorNovo: true }],
+      });
+
+      await recalcularDerivados(tx, produtoId, novaBase, {
+        usuarioId,
+        motivo: `Recalculado a partir do novo nível de referência "${novaBase.nome}"`,
+      });
       return novaBase;
     });
 
@@ -162,12 +213,25 @@ async function recalcular(req, res, next) {
     const base = await prisma.nivelVendaProduto.findFirst({ where: { produtoId, ehBase: true, ativo: true } });
     if (!base) return res.status(400).json({ error: 'Este produto não tem um nível de referência definido' });
 
-    const atualizado = await prisma.nivelVendaProduto.update({
-      where: { id: nivelId },
-      data: {
-        precoManual: false,
-        preco: arredondarMoeda((Number(base.preco) / base.quantidadeGrao) * nivel.quantidadeGrao),
-      },
+    const precoNovo = arredondarMoeda((Number(base.preco) / base.quantidadeGrao) * nivel.quantidadeGrao);
+
+    const atualizado = await prisma.$transaction(async (tx) => {
+      const salvo = await tx.nivelVendaProduto.update({
+        where: { id: nivelId },
+        data: { precoManual: false, preco: precoNovo },
+      });
+      await registrarAlteracoes(tx, {
+        produtoId,
+        entidade: 'NivelVendaProduto',
+        entidadeId: nivelId,
+        usuarioId: req.usuario?.id,
+        motivo: `Preço destravado e recalculado a partir do nível "${base.nome}"`,
+        alteracoes: [
+          { campo: 'preco', valorAntigo: nivel.preco, valorNovo: precoNovo },
+          { campo: 'precoManual', valorAntigo: nivel.precoManual, valorNovo: false },
+        ],
+      });
+      return salvo;
     });
     res.json(atualizado);
   } catch (err) {
@@ -209,7 +273,16 @@ async function remover(req, res, next) {
     if (nivel.ehBase) {
       return res.status(400).json({ error: 'Defina outro nível como referência antes de remover este' });
     }
-    await prisma.nivelVendaProduto.update({ where: { id: nivel.id }, data: { ativo: false } });
+    await prisma.$transaction(async (tx) => {
+      await tx.nivelVendaProduto.update({ where: { id: nivel.id }, data: { ativo: false } });
+      await registrarAlteracoes(tx, {
+        produtoId: nivel.produtoId,
+        entidade: 'NivelVendaProduto',
+        entidadeId: nivel.id,
+        usuarioId: req.usuario?.id,
+        alteracoes: [{ campo: 'ativo', valorAntigo: nivel.ativo, valorNovo: false }],
+      });
+    });
     res.status(204).send();
   } catch (err) {
     next(err);

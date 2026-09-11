@@ -14,6 +14,8 @@ router.put('/:id', ctrl.atualizar);
 router.post('/:id/imagem', uploadImagemProduto.single('imagem'), ctrl.enviarImagem);
 router.delete('/:id', ctrl.remover);
 
+router.get('/:id/historico', ctrl.historico);
+
 router.get('/:id/niveis', niveisCtrl.listarPorProduto);
 router.post('/:id/niveis', niveisCtrl.criar);
 router.put('/:id/niveis/:nivelId', niveisCtrl.atualizar);

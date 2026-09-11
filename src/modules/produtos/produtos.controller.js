@@ -1,5 +1,6 @@
 const prisma = require('../../config/db');
 const cloudinary = require('../../config/cloudinary');
+const { registrarAlteracoes } = require('../../utils/historicoAlteracao');
 
 async function listar(req, res, next) {
   try {
@@ -65,11 +66,32 @@ async function criar(req, res, next) {
 // de enviar — ver ProdutosTab.jsx) — aqui só grava o valor recebido.
 async function atualizar(req, res, next) {
   try {
+    const id = Number(req.params.id);
     const { nome, tipo, precoCusto, estoqueMinimo } = req.body;
-    const produto = await prisma.produto.update({
-      where: { id: Number(req.params.id) },
-      data: { nome, tipo, precoCusto, estoqueMinimo },
+
+    const antes = await prisma.produto.findUnique({ where: { id } });
+    if (!antes) return res.status(404).json({ error: 'Produto não encontrado' });
+
+    const produto = await prisma.$transaction(async (tx) => {
+      const atualizado = await tx.produto.update({
+        where: { id },
+        data: { nome, tipo, precoCusto, estoqueMinimo },
+      });
+      await registrarAlteracoes(tx, {
+        produtoId: id,
+        entidade: 'Produto',
+        entidadeId: id,
+        usuarioId: req.usuario?.id,
+        alteracoes: [
+          { campo: 'nome', valorAntigo: antes.nome, valorNovo: atualizado.nome },
+          { campo: 'tipo', valorAntigo: antes.tipo, valorNovo: atualizado.tipo },
+          { campo: 'precoCusto', valorAntigo: antes.precoCusto, valorNovo: atualizado.precoCusto },
+          { campo: 'estoqueMinimo', valorAntigo: antes.estoqueMinimo, valorNovo: atualizado.estoqueMinimo },
+        ],
+      });
+      return atualizado;
     });
+
     res.json(produto);
   } catch (err) {
     next(err);
@@ -103,11 +125,55 @@ async function enviarImagem(req, res, next) {
 
 async function remover(req, res, next) {
   try {
-    await prisma.produto.update({ where: { id: Number(req.params.id) }, data: { ativo: false } });
+    const id = Number(req.params.id);
+    const antes = await prisma.produto.findUnique({ where: { id } });
+    if (!antes) return res.status(404).json({ error: 'Produto não encontrado' });
+
+    await prisma.$transaction(async (tx) => {
+      await tx.produto.update({ where: { id }, data: { ativo: false } });
+      await registrarAlteracoes(tx, {
+        produtoId: id,
+        entidade: 'Produto',
+        entidadeId: id,
+        usuarioId: req.usuario?.id,
+        alteracoes: [{ campo: 'ativo', valorAntigo: antes.ativo, valorNovo: false }],
+      });
+    });
     res.status(204).send();
   } catch (err) {
     next(err);
   }
 }
 
-module.exports = { listar, obter, criar, atualizar, enviarImagem, remover };
+// Histórico de auditoria do produto (nome/preços) — inclui alterações feitas em qualquer
+// nível de venda dele, não só no Produto em si (ver HistoricoAlteracao.produtoId).
+async function historico(req, res, next) {
+  try {
+    const produtoId = Number(req.params.id);
+    const registros = await prisma.historicoAlteracao.findMany({
+      where: { produtoId },
+      include: { usuario: { select: { id: true, nome: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+    });
+
+    // Nível de venda pode já ter sido desativado/renomeado desde então — busca o nome atual só
+    // pra dar contexto na lista ("preço do nível X mudou"), não representa o nome na época.
+    const nivelIds = [...new Set(registros.filter((r) => r.entidade === 'NivelVendaProduto').map((r) => r.entidadeId))];
+    const niveis = nivelIds.length
+      ? await prisma.nivelVendaProduto.findMany({ where: { id: { in: nivelIds } }, select: { id: true, nome: true } })
+      : [];
+    const mapaNiveis = new Map(niveis.map((n) => [n.id, n.nome]));
+
+    res.json(
+      registros.map((r) => ({
+        ...r,
+        nivelNome: r.entidade === 'NivelVendaProduto' ? mapaNiveis.get(r.entidadeId) || null : null,
+      }))
+    );
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { listar, obter, criar, atualizar, enviarImagem, remover, historico };

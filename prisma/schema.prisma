@@ -71,8 +71,10 @@ model Usuario {
   // padrão, sem uma tabela Unidade separada).
   unidade String?
 
-  vendas       Venda[]
-  recebimentos Recebimento[]
+  vendas               Venda[]
+  recebimentos         Recebimento[]
+  movimentacoesEstoque MovimentacaoEstoque[]
+  historicoAlteracoes  HistoricoAlteracao[]
 
   sessoesCaixaAbertas  SessaoCaixa[] @relation("SessaoCaixaAbertura")
   sessoesCaixaFechadas SessaoCaixa[] @relation("SessaoCaixaFechamento")
@@ -140,13 +142,14 @@ model Produto {
   ativo         Boolean  @default(true)
   createdAt     DateTime @default(now())
 
-  lotes            Lote[]
-  movimentacoes    MovimentacaoEstoque[]
-  itensVenda       ItemVenda[]
-  itensRecebimento ItemRecebimento[]
-  estoquePorCaixa  EstoqueCaixa[]
-  precosFornecedor PrecoFornecedor[]
-  niveisVenda      NivelVendaProduto[]
+  lotes               Lote[]
+  movimentacoes       MovimentacaoEstoque[]
+  itensVenda          ItemVenda[]
+  itensRecebimento    ItemRecebimento[]
+  estoquePorCaixa     EstoqueCaixa[]
+  precosFornecedor    PrecoFornecedor[]
+  niveisVenda         NivelVendaProduto[]
+  historicoAlteracoes HistoricoAlteracao[]
 }
 
 // Um jeito vendável de embalar o mesmo produto (ex: Unidade, Dúzia, Bandeja, Caixa) — não tem
@@ -195,7 +198,34 @@ model MovimentacaoEstoque {
   tipo       TipoMovimentacaoEstoque
   quantidade Int
   motivo     String?
+  // Quem fez o ajuste manual de estoque (entrada avulsa, distribuição, recebimento) — null nas
+  // movimentações automáticas de venda (checkout/confirmação, já rastreadas por Venda.vendedorId)
+  // e nas geradas sem usuário autenticado (ex: confirmação via webhook do Mercado Pago).
+  usuarioId  Int?
+  usuario    Usuario?                @relation(fields: [usuarioId], references: [id])
   createdAt  DateTime                @default(now())
+}
+
+// Trilha de auditoria pra edições no catálogo de produtos: nome, preço de custo, e preço/dados
+// de cada nível de venda (incluindo o recálculo em cascata quando o nível de referência muda —
+// ver niveisVenda.controller.js). Uma linha por campo alterado, não um blob — fácil de listar
+// cronologicamente ou filtrar por campo. produtoId fica sempre preenchido (mesmo quando quem
+// mudou foi um NivelVendaProduto) pra dar pra ver o histórico inteiro de um produto de uma vez.
+model HistoricoAlteracao {
+  id          Int      @id @default(autoincrement())
+  produtoId   Int
+  produto     Produto  @relation(fields: [produtoId], references: [id], onDelete: Cascade)
+  entidade    String // 'Produto' | 'NivelVendaProduto'
+  entidadeId  Int
+  campo       String // 'nome' | 'tipo' | 'precoCusto' | 'estoqueMinimo' | 'preco' | 'quantidadeGrao' | 'ehBase' | 'ativo' | ...
+  valorAntigo String?
+  valorNovo   String?
+  usuarioId   Int?
+  usuario     Usuario? @relation(fields: [usuarioId], references: [id])
+  motivo      String?
+  createdAt   DateTime @default(now())
+
+  @@index([produtoId, createdAt])
 }
 
 model Recebimento {

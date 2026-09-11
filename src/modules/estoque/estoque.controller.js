@@ -13,7 +13,13 @@ async function entrada(req, res, next) {
         data: { quantidade: { increment: Number(quantidade) } },
       }),
       prisma.movimentacaoEstoque.create({
-        data: { produtoId: Number(produtoId), tipo: 'ENTRADA', quantidade: Number(quantidade), motivo },
+        data: {
+          produtoId: Number(produtoId),
+          tipo: 'ENTRADA',
+          quantidade: Number(quantidade),
+          motivo,
+          usuarioId: req.usuario?.id,
+        },
       }),
       ...(validade
         ? [prisma.lote.create({ data: { produtoId: Number(produtoId), quantidade: Number(quantidade), validade: new Date(validade) } })]
@@ -65,6 +71,7 @@ async function saida(req, res, next) {
           tipo: 'ENTRADA',
           quantidade: Number(quantidade),
           motivo: motivo || `Distribuição manual para ${caixa.nome}`,
+          usuarioId: req.usuario?.id,
         },
       }),
     ]);
@@ -80,7 +87,7 @@ async function historico(req, res, next) {
     const where = req.query.produtoId ? { produtoId: Number(req.query.produtoId) } : {};
     const movimentacoes = await prisma.movimentacaoEstoque.findMany({
       where,
-      include: { produto: true },
+      include: { produto: true, usuario: { select: { id: true, nome: true } } },
       orderBy: { createdAt: 'desc' },
       take: 100,
     });

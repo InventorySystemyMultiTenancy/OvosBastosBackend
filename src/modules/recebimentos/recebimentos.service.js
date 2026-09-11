@@ -1,4 +1,5 @@
 const prisma = require('../../config/db');
+const { registrarAlteracoes } = require('../../utils/historicoAlteracao');
 
 const INCLUDE_PADRAO = {
   fornecedor: true,
@@ -81,6 +82,7 @@ async function criar({ itens, observacao, criadoPorId }) {
     });
 
     for (const item of itensValidos) {
+      const produtoAntes = produtos.find((p) => p.id === item.produtoId);
       await tx.produto.update({
         where: { id: item.produtoId },
         data: {
@@ -95,8 +97,21 @@ async function criar({ itens, observacao, criadoPorId }) {
           tipo: 'ENTRADA',
           quantidade: item.quantidadeBase,
           motivo: `Recebimento #${recebimento.id}`,
+          usuarioId: criadoPorId || null,
         },
       });
+      // Receber com um preço de custo novo muda Produto.precoCusto na hora — é uma alteração
+      // de valor de produto igual a editar direto na aba Produtos, só que disparada daqui.
+      if (item.precoCusto !== undefined) {
+        await registrarAlteracoes(tx, {
+          produtoId: item.produtoId,
+          entidade: 'Produto',
+          entidadeId: item.produtoId,
+          usuarioId: criadoPorId,
+          motivo: `Recebimento #${recebimento.id}`,
+          alteracoes: [{ campo: 'precoCusto', valorAntigo: produtoAntes?.precoCusto, valorNovo: item.precoCusto }],
+        });
+      }
     }
 
     return recebimento.id;
@@ -170,7 +185,7 @@ async function pagar(id, valor) {
   return obter(id);
 }
 
-async function distribuir(id, distribuicoes) {
+async function distribuir(id, distribuicoes, usuarioId) {
   if (!Array.isArray(distribuicoes) || distribuicoes.length === 0) {
     throw Object.assign(new Error('distribuicoes é obrigatório'), { status: 400 });
   }
@@ -255,6 +270,7 @@ async function distribuir(id, distribuicoes) {
           tipo: 'ENTRADA',
           quantidade: linha.quantidade,
           motivo: `Distribuição recebimento #${recebimento.id}`,
+          usuarioId: usuarioId || null,
         },
       });
     }

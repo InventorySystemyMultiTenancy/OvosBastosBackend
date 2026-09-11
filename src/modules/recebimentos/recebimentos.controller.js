@@ -36,7 +36,7 @@ async function definirFornecedor(req, res, next) {
 
 async function distribuir(req, res, next) {
   try {
-    res.json(await service.distribuir(req.params.id, req.body.distribuicoes));
+    res.json(await service.distribuir(req.params.id, req.body.distribuicoes, req.usuario?.id));
   } catch (err) {
     next(err);
   }
