@@ -49,10 +49,18 @@ async function listarPorProduto(req, res, next) {
   }
 }
 
+// Normaliza o código de barras recebido do formulário/leitor: string vazia vira null (pro
+// unique constraint do banco não tratar "" como valor duplicado entre níveis sem código).
+function normalizarCodigoBarras(valor) {
+  if (valor === undefined) return undefined;
+  const limpo = typeof valor === 'string' ? valor.trim() : valor;
+  return limpo === '' || limpo === null ? null : String(limpo);
+}
+
 async function criar(req, res, next) {
   try {
     const produtoId = Number(req.params.id);
-    const { nome, quantidadeGrao, preco } = req.body;
+    const { nome, quantidadeGrao, preco, codigoBarras } = req.body;
     if (!nome || !nome.trim() || !quantidadeGrao || Number(quantidadeGrao) <= 0) {
       return res.status(400).json({ error: 'Nome e quantidade em grão-base (> 0) são obrigatórios' });
     }
@@ -82,10 +90,14 @@ async function criar(req, res, next) {
         preco: precoFinal,
         ehBase: !baseAtual,
         precoManual: !baseAtual ? true : precoManual,
+        codigoBarras: normalizarCodigoBarras(codigoBarras) || null,
       },
     });
     res.status(201).json(nivel);
   } catch (err) {
+    if (err.code === 'P2002' && err.meta?.target?.includes('codigoBarras')) {
+      return res.status(400).json({ error: 'Este código de barras já está cadastrado em outro nível' });
+    }
     next(err);
   }
 }
@@ -99,7 +111,7 @@ async function atualizar(req, res, next) {
       return res.status(404).json({ error: 'Nível não encontrado' });
     }
 
-    const { nome, quantidadeGrao, preco } = req.body;
+    const { nome, quantidadeGrao, preco, codigoBarras } = req.body;
     const data = {};
     if (nome !== undefined) data.nome = nome.trim();
     if (quantidadeGrao !== undefined) data.quantidadeGrao = Number(quantidadeGrao);
@@ -107,6 +119,7 @@ async function atualizar(req, res, next) {
       data.preco = Number(preco);
       if (!nivel.ehBase) data.precoManual = true;
     }
+    if (codigoBarras !== undefined) data.codigoBarras = normalizarCodigoBarras(codigoBarras);
 
     const usuarioId = req.usuario?.id;
 
@@ -121,6 +134,7 @@ async function atualizar(req, res, next) {
           { campo: 'nome', valorAntigo: nivel.nome, valorNovo: salvo.nome },
           { campo: 'quantidadeGrao', valorAntigo: nivel.quantidadeGrao, valorNovo: salvo.quantidadeGrao },
           { campo: 'preco', valorAntigo: nivel.preco, valorNovo: salvo.preco },
+          { campo: 'codigoBarras', valorAntigo: nivel.codigoBarras, valorNovo: salvo.codigoBarras },
         ],
       });
       // Preço ou o próprio tamanho do nível base mudou — a proporção usada pra derivar os
@@ -136,6 +150,9 @@ async function atualizar(req, res, next) {
 
     res.json(atualizado);
   } catch (err) {
+    if (err.code === 'P2002' && err.meta?.target?.includes('codigoBarras')) {
+      return res.status(400).json({ error: 'Este código de barras já está cadastrado em outro nível' });
+    }
     next(err);
   }
 }

@@ -174,6 +174,9 @@ model NivelVendaProduto {
   // Foto própria deste nível no card do PDV/catálogo — se vazio, usa a imagem do produto (ver
   // resolução no frontend).
   imagemUrl      String?
+  // Código de barras deste nível (etiqueta própria dele, ex: EAN da Dúzia é diferente do EAN
+  // da Bandeja) — bipado no caixa com o leitor pra adicionar direto ao carrinho (ver Caixa.jsx).
+  codigoBarras   String?  @unique
   ativo          Boolean  @default(true)
   createdAt      DateTime @default(now())
 
