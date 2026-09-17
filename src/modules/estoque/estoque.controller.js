@@ -82,6 +82,77 @@ async function saida(req, res, next) {
   }
 }
 
+// Corrige a quantidade de um produto (no pool central, sem caixaId, ou já distribuído numa
+// unidade, com caixaId) pro valor exato contado fisicamente — diferente de entrada/saída, que
+// somam/subtraem um delta, aqui o operador digita o valor final. Registra a diferença como uma
+// MovimentacaoEstoque comum (ENTRADA se sobrou, SAIDA se faltou) pra manter o mesmo histórico
+// de auditoria, sem precisar abrir um Recebimento só pra corrigir uma contagem errada.
+async function ajustar(req, res, next) {
+  try {
+    const { produtoId, caixaId, quantidade, motivo } = req.body;
+    const novaQuantidade = Number(quantidade);
+    if (!produtoId || quantidade === undefined || quantidade === null || Number.isNaN(novaQuantidade) || novaQuantidade < 0) {
+      return res.status(400).json({ error: 'produtoId e quantidade (número >= 0) são obrigatórios' });
+    }
+
+    const produto = await prisma.produto.findUnique({ where: { id: Number(produtoId) } });
+    if (!produto || !produto.ativo) return res.status(404).json({ error: 'Produto não encontrado' });
+
+    const motivoBase = motivo?.trim() || 'Ajuste manual de contagem';
+
+    if (caixaId) {
+      const caixa = await prisma.caixa.findUnique({ where: { id: Number(caixaId) } });
+      if (!caixa || !caixa.ativo) return res.status(404).json({ error: 'Unidade não encontrada ou inativa' });
+
+      const atual = await prisma.estoqueCaixa.findUnique({
+        where: { produtoId_caixaId: { produtoId: Number(produtoId), caixaId: Number(caixaId) } },
+      });
+      const quantidadeAtual = atual?.quantidade || 0;
+      const delta = novaQuantidade - quantidadeAtual;
+      if (delta === 0) return res.json({ produtoId: Number(produtoId), caixaId: Number(caixaId), quantidade: novaQuantidade });
+
+      await prisma.$transaction([
+        prisma.estoqueCaixa.upsert({
+          where: { produtoId_caixaId: { produtoId: Number(produtoId), caixaId: Number(caixaId) } },
+          create: { produtoId: Number(produtoId), caixaId: Number(caixaId), quantidade: novaQuantidade },
+          update: { quantidade: novaQuantidade },
+        }),
+        prisma.movimentacaoEstoque.create({
+          data: {
+            produtoId: Number(produtoId),
+            caixaId: Number(caixaId),
+            tipo: delta > 0 ? 'ENTRADA' : 'SAIDA',
+            quantidade: Math.abs(delta),
+            motivo: `${motivoBase} (${quantidadeAtual} → ${novaQuantidade})`,
+            usuarioId: req.usuario?.id,
+          },
+        }),
+      ]);
+      return res.json({ produtoId: Number(produtoId), caixaId: Number(caixaId), quantidade: novaQuantidade });
+    }
+
+    const quantidadeAtual = produto.quantidade;
+    const delta = novaQuantidade - quantidadeAtual;
+    if (delta === 0) return res.json(produto);
+
+    const [produtoAtualizado] = await prisma.$transaction([
+      prisma.produto.update({ where: { id: Number(produtoId) }, data: { quantidade: novaQuantidade } }),
+      prisma.movimentacaoEstoque.create({
+        data: {
+          produtoId: Number(produtoId),
+          tipo: delta > 0 ? 'ENTRADA' : 'SAIDA',
+          quantidade: Math.abs(delta),
+          motivo: `${motivoBase} (${quantidadeAtual} → ${novaQuantidade})`,
+          usuarioId: req.usuario?.id,
+        },
+      }),
+    ]);
+    res.json(produtoAtualizado);
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function historico(req, res, next) {
   try {
     const where = req.query.produtoId ? { produtoId: Number(req.query.produtoId) } : {};
@@ -152,4 +223,4 @@ async function matriz(req, res, next) {
   }
 }
 
-module.exports = { entrada, saida, historico, alertas, matriz };
+module.exports = { entrada, saida, ajustar, historico, alertas, matriz };

@@ -62,7 +62,7 @@ async function caixaPermitida(req, caixaId) {
 
 async function checkout(req, res, next) {
   try {
-    const { nomeCliente, itens, formaPagamento, vencimento, desconto, acrescimo, caixaId, valorDinheiro } = req.body;
+    const { nomeCliente, itens, formaPagamento, vencimento, desconto, acrescimo, caixaId, valorDinheiro, tipoCartaoManual } = req.body;
 
     if (!nomeCliente || !nomeCliente.trim()) {
       return res.status(400).json({ error: 'Informe o nome do cliente' });
@@ -82,6 +82,7 @@ async function checkout(req, res, next) {
       desconto: Number(desconto) || 0,
       acrescimo: Number(acrescimo) || 0,
       valorDinheiro,
+      tipoCartaoManual,
     });
 
     res.status(201).json(venda);
@@ -191,6 +192,7 @@ async function comprovante(req, res, next) {
       acrescimo: venda.acrescimo,
       total: venda.total,
       formaPagamento: venda.formaPagamento,
+      tipoCartaoManual: venda.tipoCartaoManual,
       valorDinheiro: venda.valorDinheiro,
       pagamentosMaquininha: venda.pagamentosPointMP
         .filter((p) => p.status === 'APROVADO')

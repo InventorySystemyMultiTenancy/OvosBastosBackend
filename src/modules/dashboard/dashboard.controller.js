@@ -478,9 +478,10 @@ const FORMAS_PAGAMENTO_SIMPLES = ['PIX', 'DINHEIRO', 'BOLETO', 'FIADO'];
 
 // Resumo pra fechar o dia (botão no topo do dashboard, só admin): faturamento, lucro líquido
 // e quanto entrou em cada forma de pagamento — cartão é dividido em crédito/débito usando o
-// tipo real que a maquininha reportou (PagamentoPointMP.tipoPagamentoDetectado); vendas
-// confirmadas com CARTAO mas sem nenhuma cobrança de maquininha associada (ex: confirmadas
-// manualmente, sem integração) caem em "outro" por não ter como saber o tipo.
+// tipo real que a maquininha reportou (PagamentoPointMP.tipoPagamentoDetectado), ou o que o
+// operador escolheu na hora de lançar uma venda paga na maquininha por fora do sistema
+// (Venda.tipoCartaoManual — ver vendas.service.js); só cai em "outro" quando nenhum dos dois
+// existe (ex: venda antiga confirmada manualmente antes dessa distinção existir).
 async function fechamentoDia(req, res, next) {
   try {
     const inicioHoje = new Date();
@@ -493,6 +494,7 @@ async function fechamentoDia(req, res, next) {
           total: true,
           formaPagamento: true,
           valorDinheiro: true,
+          tipoCartaoManual: true,
           pagamentosPointMP: {
             where: { status: 'APROVADO' },
             select: { valor: true, tipoPagamentoDetectado: true },
@@ -528,6 +530,10 @@ async function fechamentoDia(req, res, next) {
             else if (p.tipoPagamentoDetectado === 'debit_card') totais.CARTAO_DEBITO += valor;
             else totais.CARTAO_OUTRO += valor;
           });
+        } else if (v.tipoCartaoManual === 'CREDITO') {
+          totais.CARTAO_CREDITO += total - dinheiro;
+        } else if (v.tipoCartaoManual === 'DEBITO') {
+          totais.CARTAO_DEBITO += total - dinheiro;
         } else {
           totais.CARTAO_OUTRO += total - dinheiro;
         }

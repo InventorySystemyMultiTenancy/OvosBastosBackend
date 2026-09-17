@@ -22,7 +22,18 @@ function unidadesBaseDoItem(item) {
   return item.quantidade * item.quantidadeGraoPorNivel;
 }
 
-async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaPagamento, vencimento, desconto = 0, acrescimo = 0, valorDinheiro, origemMotivo }) {
+function validarTipoCartaoManual(formaPagamento, tipoCartaoManual) {
+  if (tipoCartaoManual === undefined || tipoCartaoManual === null || tipoCartaoManual === '') return null;
+  if (formaPagamento !== 'CARTAO') {
+    throw Object.assign(new Error('tipoCartaoManual só é aceito com formaPagamento "CARTAO"'), { status: 400 });
+  }
+  if (!['CREDITO', 'DEBITO'].includes(tipoCartaoManual)) {
+    throw Object.assign(new Error('tipoCartaoManual deve ser "CREDITO" ou "DEBITO"'), { status: 400 });
+  }
+  return tipoCartaoManual;
+}
+
+async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaPagamento, vencimento, desconto = 0, acrescimo = 0, valorDinheiro, tipoCartaoManual, origemMotivo }) {
   if (!clienteId || !Array.isArray(itens) || itens.length === 0) {
     throw Object.assign(new Error('clienteId e ao menos um item são obrigatórios'), { status: 400 });
   }
@@ -33,7 +44,10 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
   // "MAQUININHA" é um sinalizador do checkout, não um valor válido do enum FormaPagamento:
   // a venda nasce como ORÇAMENTO (sem baixar estoque) e só é confirmada — com formaPagamento
   // "CARTAO" — quando o Mercado Pago aprova o pagamento (ver mercadopago.service.aplicarStatusIntent).
+  // Uma venda paga na maquininha por fora do sistema (sem integração, ex: internet caiu) já
+  // chega aqui como formaPagamento "CARTAO" direto — confirma na hora, igual "DINHEIRO".
   const viaMaquininha = formaPagamento === 'MAQUININHA';
+  const tipoCartaoManualValidado = validarTipoCartaoManual(formaPagamento, tipoCartaoManual);
 
   // Pagamento dividido: uma parte sai em dinheiro na hora, o restante vai pra maquininha.
   // Só faz sentido junto com MAQUININHA — o valor em dinheiro puro já é a forma "DINHEIRO".
@@ -147,6 +161,7 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
         status: viaMaquininha ? 'ORCAMENTO' : 'CONFIRMADA',
         formaPagamento: viaMaquininha ? null : formaPagamento,
         valorDinheiro: valorDinheiroNum,
+        tipoCartaoManual: tipoCartaoManualValidado,
         desconto,
         acrescimo,
         total,
@@ -205,11 +220,12 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
   return prisma.venda.findUnique({ where: { id: venda.id }, include: INCLUDE_PADRAO });
 }
 
-async function confirmarVenda(vendaId, { formaPagamento, vencimento }) {
+async function confirmarVenda(vendaId, { formaPagamento, vencimento, tipoCartaoManual }) {
   const id = Number(vendaId);
   if (!formaPagamento) {
     throw Object.assign(new Error('formaPagamento é obrigatória'), { status: 400 });
   }
+  const tipoCartaoManualValidado = validarTipoCartaoManual(formaPagamento, tipoCartaoManual);
 
   const venda = await prisma.venda.findUnique({ where: { id }, include: { itens: true, cliente: true } });
   if (!venda) {
@@ -257,7 +273,7 @@ async function confirmarVenda(vendaId, { formaPagamento, vencimento }) {
   const operacoes = [
     prisma.venda.update({
       where: { id },
-      data: { status: 'CONFIRMADA', formaPagamento, confirmadaEm: new Date() },
+      data: { status: 'CONFIRMADA', formaPagamento, tipoCartaoManual: tipoCartaoManualValidado, confirmadaEm: new Date() },
     }),
     ...venda.itens.flatMap((item) => {
       const bandejas = unidadesBaseDoItem(item);
@@ -346,7 +362,7 @@ async function reabrirVenda(vendaId) {
     }),
     prisma.venda.update({
       where: { id },
-      data: { status: 'ORCAMENTO', formaPagamento: null, valorDinheiro: null, confirmadaEm: null },
+      data: { status: 'ORCAMENTO', formaPagamento: null, valorDinheiro: null, tipoCartaoManual: null, confirmadaEm: null },
     }),
   ];
 

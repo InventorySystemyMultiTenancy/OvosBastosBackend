@@ -7,6 +7,7 @@ const router = Router();
 router.use(authenticate);
 router.post('/entrada', ctrl.entrada);
 router.post('/saida', ctrl.saida);
+router.put('/ajuste', ctrl.ajustar);
 router.get('/historico', ctrl.historico);
 router.get('/alertas', ctrl.alertas);
 router.get('/matriz', ctrl.matriz);
