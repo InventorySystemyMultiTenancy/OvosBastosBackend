@@ -13,7 +13,7 @@ const INCLUDE_PADRAO = {
 
 async function listar(req, res, next) {
   try {
-    const { status, de, ate, caixaId } = req.query;
+    const { status, de, ate, caixaId, data } = req.query;
     const where = {};
     if (status) where.status = status;
     if (caixaId) where.caixaId = Number(caixaId);
@@ -25,6 +25,13 @@ async function listar(req, res, next) {
         fim.setHours(23, 59, 59, 999);
         where.confirmadaEm.lte = fim;
       }
+    }
+    // Filtro por dia específico (data em que a venda foi efetuada, não confirmadaEm — pega
+    // também orçamentos ainda não confirmados naquele dia).
+    if (data) {
+      const inicio = new Date(`${data}T00:00:00`);
+      const fim = new Date(`${data}T23:59:59.999`);
+      where.createdAt = { gte: inicio, lte: fim };
     }
 
     const vendas = await prisma.venda.findMany({
