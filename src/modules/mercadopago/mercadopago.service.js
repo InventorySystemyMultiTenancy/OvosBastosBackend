@@ -117,7 +117,7 @@ function credenciaisAtivas(caixa) {
 async function statusResincronizado(pagamento, accessToken) {
   const order = await mpClient.obterOrder(accessToken, pagamento.paymentIntentId).catch(() => null);
   if (!order) return pagamento.status;
-  const atualizado = await aplicarStatusIntent(pagamento, order);
+  const atualizado = await aplicarStatusIntent(pagamento, order, accessToken);
   return atualizado.status;
 }
 
@@ -289,7 +289,7 @@ async function listarStatusPagamentos(vendaId) {
   if (ativo) {
     const { accessToken } = credenciaisAtivas(venda.caixa);
     const order = await mpClient.obterOrder(accessToken, ativo.paymentIntentId).catch(() => null);
-    if (order) await aplicarStatusIntent(ativo, order);
+    if (order) await aplicarStatusIntent(ativo, order, accessToken);
   }
 
   await verificarQuitacaoEConfirmar(id);
@@ -317,12 +317,34 @@ function mapearStatus(orderStatus) {
   return mapa[orderStatus] || 'EM_PROCESSO';
 }
 
-async function aplicarStatusIntent(pagamento, order) {
+// A Order às vezes traz transactions.payments[0].payment_method.type vazio ou defasado logo
+// depois de processada — o recurso de Payments (GET /v1/payments/:id, legado mas maduro) é a
+// fonte mais confiável pra payment_type_id (credit_card/debit_card/...), então sempre que tem
+// o id do payment a gente prioriza essa consulta e só cai pro campo embutido da Order se ela
+// falhar. Isso é o que resolve o fechamento do dia mostrar cartão sempre como "não identificado".
+async function detectarTipoPagamento(accessToken, order) {
+  const pagamentoOrder = order?.transactions?.payments?.[0];
+  if (!pagamentoOrder) return null;
+
+  if (pagamentoOrder.id) {
+    try {
+      const pagamentoDetalhado = await mpClient.obterPagamento(accessToken, pagamentoOrder.id);
+      if (pagamentoDetalhado?.payment_type_id) return pagamentoDetalhado.payment_type_id;
+    } catch (err) {
+      console.error(`Falha ao consultar payment ${pagamentoOrder.id} pra detectar débito/crédito:`, err.message);
+    }
+  }
+
+  return pagamentoOrder.payment_method?.type || null;
+}
+
+async function aplicarStatusIntent(pagamento, order, accessToken) {
   const novoStatus = mapearStatus(order.status);
-  // Tipo real do meio de pagamento (credit_card/debit_card/...) só vem preenchido depois que
-  // o pagamento é processado — alimenta o fechamento do dia (dashboard). Nunca sobrescreve um
-  // valor já detectado com null (uma reconsulta antes do terminal processar não deve apagar).
-  const tipoDetectado = order?.transactions?.payments?.[0]?.payment_method?.type;
+  // Só vale a pena consultar o tipo quando o pagamento já foi processado (antes disso não há
+  // payment_method definido ainda) — e nunca sobrescreve um valor já detectado com null (uma
+  // reconsulta que falhe não deve apagar o que já tínhamos).
+  const tipoDetectado =
+    ['APROVADO', 'REJEITADO'].includes(novoStatus) && accessToken ? await detectarTipoPagamento(accessToken, order) : null;
 
   const atualizado = await prisma.pagamentoPointMP.update({
     where: { id: pagamento.id },
@@ -355,7 +377,58 @@ async function processarWebhook(payload) {
 
   const accessToken = crypto.decrypt(pagamento.caixa.mpAccessTokenEnc);
   const order = await mpClient.obterOrder(accessToken, pagamento.paymentIntentId);
-  await aplicarStatusIntent(pagamento, order);
+  await aplicarStatusIntent(pagamento, order, accessToken);
+}
+
+// "Relatório da maquininha" pra comparar com o que o sistema registrou no fechamento de
+// caixa: busca na própria conta Mercado Pago do caixa os pagamentos aprovados no intervalo da
+// sessão e soma por tipo. É best-effort — sem token/maquininha configurada, ou se a consulta
+// falhar (rede, token revogado etc.), volta com disponivel:false e o motivo, sem quebrar o
+// fechamento do caixa em si. Como a conta MP é 1-pra-1 com o caixa (ver configurarToken),
+// todo pagamento aprovado nela no período tende a vir do Point deste caixa — a exceção seria
+// a mesma conta também receber cobranças por outro canal (checkout online etc.).
+async function obterRelatorioTerminal(caixaId, desde, ate) {
+  const caixa = await prisma.caixa.findUnique({ where: { id: Number(caixaId) } });
+  if (!caixa || !caixa.mpAccessTokenEnc) {
+    return { disponivel: false, motivo: 'Este caixa não tem uma maquininha Mercado Pago configurada' };
+  }
+
+  try {
+    const accessToken = crypto.decrypt(caixa.mpAccessTokenEnc);
+    const totais = { credit_card: 0, debit_card: 0, outros: 0 };
+    let quantidadePagamentos = 0;
+    const limit = 50;
+    let offset = 0;
+    let total = Infinity;
+
+    while (offset < total) {
+      const pagina = await mpClient.buscarPagamentos(accessToken, {
+        beginDate: desde.toISOString(),
+        endDate: ate.toISOString(),
+        offset,
+        limit,
+      });
+      total = pagina?.paging?.total ?? 0;
+      const resultados = pagina?.results || [];
+      if (resultados.length === 0) break;
+
+      resultados.forEach((p) => {
+        if (p.status !== 'approved') return;
+        quantidadePagamentos += 1;
+        const valor = Number(p.transaction_amount || 0);
+        if (p.payment_type_id === 'credit_card') totais.credit_card += valor;
+        else if (p.payment_type_id === 'debit_card') totais.debit_card += valor;
+        else totais.outros += valor;
+      });
+
+      offset += limit;
+    }
+
+    const totalGeral = totais.credit_card + totais.debit_card + totais.outros;
+    return { disponivel: true, quantidadePagamentos, totais, totalGeral };
+  } catch (err) {
+    return { disponivel: false, motivo: err.message || 'Falha ao consultar o Mercado Pago' };
+  }
 }
 
 module.exports = {
@@ -367,4 +440,5 @@ module.exports = {
   cancelarCobranca,
   listarStatusPagamentos,
   processarWebhook,
+  obterRelatorioTerminal,
 };

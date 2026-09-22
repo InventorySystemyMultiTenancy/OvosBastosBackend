@@ -1,5 +1,7 @@
 const prisma = require('../../config/db');
 const { sessaoAbertaDoCaixa } = require('./sessoesCaixa.service');
+const { resumoPorFormaPagamento } = require('../vendas/vendas.service');
+const mpService = require('../mercadopago/mercadopago.service');
 
 const USUARIO_SELECT = { id: true, nome: true };
 
@@ -159,7 +161,18 @@ async function fechar(req, res, next) {
       include: INCLUDE_SESSAO,
     });
 
-    res.json(sessaoFechada);
+    // Relatório de vendas da sessão que acabou de fechar (dinheiro, pix, cartão débito/crédito
+    // etc.) sai já pronto pra bater com a maquininha, sem precisar ir até o Financeiro depois.
+    // A consulta na maquininha é best-effort — mpService já devolve disponivel:false em vez de
+    // lançar erro, então não trava o fechamento se o Mercado Pago estiver fora do ar.
+    const [resumoVendas, relatorioMaquininha] = await Promise.all([
+      resumoPorFormaPagamento({ caixaId, desde: sessao.abertaEm, ate: sessaoFechada.fechadaEm }),
+      mpService
+        .obterRelatorioTerminal(caixaId, sessao.abertaEm, sessaoFechada.fechadaEm)
+        .catch((err) => ({ disponivel: false, motivo: err.message || 'Falha ao consultar o Mercado Pago' })),
+    ]);
+
+    res.json({ ...sessaoFechada, resumoVendas, relatorioMaquininha });
   } catch (err) {
     next(err);
   }

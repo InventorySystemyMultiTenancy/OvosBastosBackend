@@ -73,6 +73,28 @@ function obterOrder(accessToken, orderId) {
   return mpRequest(accessToken, `/v1/orders/${orderId}`);
 }
 
+// Recurso "Payments" (legado, mas ainda a fonte mais estável pra payment_type_id) — usado
+// como fallback quando transactions.payments[].payment_method.type da Order vem vazio ou
+// impreciso (ver mercadopago.service.detectarTipoPagamento).
+function obterPagamento(accessToken, paymentId) {
+  return mpRequest(accessToken, `/v1/payments/${paymentId}`);
+}
+
+// Busca pagamentos aprovados da conta num intervalo — usado pra puxar o "relatório da
+// maquininha" e comparar com o que o sistema registrou (ver mercadopago.service.obterRelatorioTerminal).
+function buscarPagamentos(accessToken, { beginDate, endDate, offset = 0, limit = 50 }) {
+  const params = new URLSearchParams({
+    range: 'date_approved',
+    begin_date: beginDate,
+    end_date: endDate,
+    sort: 'date_approved',
+    criteria: 'asc',
+    offset: String(offset),
+    limit: String(limit),
+  });
+  return mpRequest(accessToken, `/v1/payments/search?${params.toString()}`);
+}
+
 function cancelarOrder(accessToken, orderId, { atTerminal = false } = {}) {
   return mpRequest(accessToken, `/v1/orders/${orderId}/cancel`, {
     method: 'POST',
@@ -88,5 +110,7 @@ module.exports = {
   definirModoPdv,
   criarOrder,
   obterOrder,
+  obterPagamento,
+  buscarPagamentos,
   cancelarOrder,
 };

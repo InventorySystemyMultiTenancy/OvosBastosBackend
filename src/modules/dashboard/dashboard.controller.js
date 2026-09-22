@@ -1,5 +1,6 @@
 const prisma = require('../../config/db');
 const { unidadesVendidas, custoTotalDosItens } = require('../../utils/custoVenda');
+const { resumoPorFormaPagamento } = require('../vendas/vendas.service');
 
 const DIAS_SEMANA = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 const TOP_PRODUTOS_POR_CAIXA = 5;
@@ -474,84 +475,32 @@ async function resumo(req, res, next) {
   }
 }
 
-const FORMAS_PAGAMENTO_SIMPLES = ['PIX', 'DINHEIRO', 'BOLETO', 'FIADO'];
-
 // Resumo pra fechar o dia (botão no topo do dashboard, só admin): faturamento, lucro líquido
-// e quanto entrou em cada forma de pagamento — cartão é dividido em crédito/débito usando o
-// tipo real que a maquininha reportou (PagamentoPointMP.tipoPagamentoDetectado), ou o que o
-// operador escolheu na hora de lançar uma venda paga na maquininha por fora do sistema
-// (Venda.tipoCartaoManual — ver vendas.service.js); só cai em "outro" quando nenhum dos dois
-// existe (ex: venda antiga confirmada manualmente antes dessa distinção existir).
+// e quanto entrou em cada forma de pagamento — cálculo em si (cartão dividido em
+// crédito/débito etc.) mora em vendas.service.resumoPorFormaPagamento, compartilhado com o
+// fechamento de sessão de caixa (sessoesCaixa.controller.fechar).
 async function fechamentoDia(req, res, next) {
   try {
     const inicioHoje = new Date();
     inicioHoje.setHours(0, 0, 0, 0);
 
-    const [vendasHoje, itensHoje] = await Promise.all([
-      prisma.venda.findMany({
-        where: { status: 'CONFIRMADA', confirmadaEm: { gte: inicioHoje } },
-        select: {
-          total: true,
-          formaPagamento: true,
-          valorDinheiro: true,
-          tipoCartaoManual: true,
-          pagamentosPointMP: {
-            where: { status: 'APROVADO' },
-            select: { valor: true, tipoPagamentoDetectado: true },
-          },
-        },
-      }),
+    const [resumo, itensHoje] = await Promise.all([
+      resumoPorFormaPagamento({ desde: inicioHoje }),
       prisma.itemVenda.findMany({
         where: { venda: { status: 'CONFIRMADA', confirmadaEm: { gte: inicioHoje } } },
         select: { quantidade: true, quantidadeGraoPorNivel: true, custoUnit: true },
       }),
     ]);
 
-    const totais = {
-      PIX: 0,
-      DINHEIRO: 0,
-      CARTAO_CREDITO: 0,
-      CARTAO_DEBITO: 0,
-      CARTAO_OUTRO: 0,
-      BOLETO: 0,
-      FIADO: 0,
-    };
-
-    vendasHoje.forEach((v) => {
-      const total = Number(v.total);
-      const dinheiro = Number(v.valorDinheiro || 0);
-      if (dinheiro > 0) totais.DINHEIRO += dinheiro;
-
-      if (v.formaPagamento === 'CARTAO') {
-        if (v.pagamentosPointMP.length > 0) {
-          v.pagamentosPointMP.forEach((p) => {
-            const valor = Number(p.valor);
-            if (p.tipoPagamentoDetectado === 'credit_card') totais.CARTAO_CREDITO += valor;
-            else if (p.tipoPagamentoDetectado === 'debit_card') totais.CARTAO_DEBITO += valor;
-            else totais.CARTAO_OUTRO += valor;
-          });
-        } else if (v.tipoCartaoManual === 'CREDITO') {
-          totais.CARTAO_CREDITO += total - dinheiro;
-        } else if (v.tipoCartaoManual === 'DEBITO') {
-          totais.CARTAO_DEBITO += total - dinheiro;
-        } else {
-          totais.CARTAO_OUTRO += total - dinheiro;
-        }
-      } else if (FORMAS_PAGAMENTO_SIMPLES.includes(v.formaPagamento)) {
-        totais[v.formaPagamento] += total;
-      }
-    });
-
-    const faturamento = vendasHoje.reduce((soma, v) => soma + Number(v.total), 0);
     const custoProdutos = custoTotalDosItens(itensHoje);
 
     res.json({
       data: inicioHoje,
-      faturamento,
+      faturamento: resumo.faturamento,
       custoProdutos,
-      lucroLiquido: faturamento - custoProdutos,
-      quantidadeVendas: vendasHoje.length,
-      porFormaPagamento: totais,
+      lucroLiquido: resumo.faturamento - custoProdutos,
+      quantidadeVendas: resumo.quantidadeVendas,
+      porFormaPagamento: resumo.porFormaPagamento,
     });
   } catch (err) {
     next(err);

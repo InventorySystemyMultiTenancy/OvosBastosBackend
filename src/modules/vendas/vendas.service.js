@@ -375,6 +375,61 @@ async function reabrirVenda(vendaId) {
   return prisma.venda.findUnique({ where: { id }, include: INCLUDE_PADRAO });
 }
 
+const FORMAS_PAGAMENTO_SIMPLES = ['PIX', 'DINHEIRO', 'BOLETO', 'FIADO'];
+
+// Quebra o faturamento confirmado num intervalo por forma de pagamento — cartão sai
+// separado em crédito/débito usando o tipo real que a maquininha reportou
+// (PagamentoPointMP.tipoPagamentoDetectado) ou o que o operador escolheu na hora de lançar
+// uma venda paga na maquininha por fora do sistema (Venda.tipoCartaoManual); só cai em
+// "outro" quando nenhum dos dois existe. Usado tanto no fechamento do dia (dashboard) quanto
+// no fechamento de uma sessão de caixa específica (sessoesCaixa.controller).
+async function resumoPorFormaPagamento({ caixaId, desde, ate } = {}) {
+  const where = { status: 'CONFIRMADA', confirmadaEm: { gte: desde } };
+  if (ate) where.confirmadaEm.lte = ate;
+  if (caixaId) where.caixaId = Number(caixaId);
+
+  const vendas = await prisma.venda.findMany({
+    where,
+    select: {
+      total: true,
+      formaPagamento: true,
+      valorDinheiro: true,
+      tipoCartaoManual: true,
+      pagamentosPointMP: { where: { status: 'APROVADO' }, select: { valor: true, tipoPagamentoDetectado: true } },
+    },
+  });
+
+  const totais = { PIX: 0, DINHEIRO: 0, CARTAO_CREDITO: 0, CARTAO_DEBITO: 0, CARTAO_OUTRO: 0, BOLETO: 0, FIADO: 0 };
+
+  vendas.forEach((v) => {
+    const total = Number(v.total);
+    const dinheiro = Number(v.valorDinheiro || 0);
+    if (dinheiro > 0) totais.DINHEIRO += dinheiro;
+
+    if (v.formaPagamento === 'CARTAO') {
+      if (v.pagamentosPointMP.length > 0) {
+        v.pagamentosPointMP.forEach((p) => {
+          const valor = Number(p.valor);
+          if (p.tipoPagamentoDetectado === 'credit_card') totais.CARTAO_CREDITO += valor;
+          else if (p.tipoPagamentoDetectado === 'debit_card') totais.CARTAO_DEBITO += valor;
+          else totais.CARTAO_OUTRO += valor;
+        });
+      } else if (v.tipoCartaoManual === 'CREDITO') {
+        totais.CARTAO_CREDITO += total - dinheiro;
+      } else if (v.tipoCartaoManual === 'DEBITO') {
+        totais.CARTAO_DEBITO += total - dinheiro;
+      } else {
+        totais.CARTAO_OUTRO += total - dinheiro;
+      }
+    } else if (FORMAS_PAGAMENTO_SIMPLES.includes(v.formaPagamento)) {
+      totais[v.formaPagamento] += total;
+    }
+  });
+
+  const faturamento = vendas.reduce((soma, v) => soma + Number(v.total), 0);
+  return { faturamento, quantidadeVendas: vendas.length, porFormaPagamento: totais };
+}
+
 // Apaga a venda de vez (linha some do banco). Só permitido pra ORCAMENTO/CANCELADA — uma
 // venda CONFIRMADA já baixou estoque e pode ter conta a receber/fechamento associado, então
 // precisa passar por reabrirVenda antes (devolve estoque e apaga a conta a receber em aberto)
@@ -404,4 +459,12 @@ async function excluirVenda(vendaId) {
   await prisma.venda.delete({ where: { id } });
 }
 
-module.exports = { INCLUDE_PADRAO, calcularTotal, processarCheckout, confirmarVenda, reabrirVenda, excluirVenda };
+module.exports = {
+  INCLUDE_PADRAO,
+  calcularTotal,
+  processarCheckout,
+  confirmarVenda,
+  reabrirVenda,
+  excluirVenda,
+  resumoPorFormaPagamento,
+};
