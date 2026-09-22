@@ -13,6 +13,9 @@ router.put('/:id/cancelar', ctrl.cancelar);
 // Reabrir desfaz estoque e faturamento de uma venda já confirmada — só admin, mesmo padrão
 // de outras ações financeiras sensíveis (divergência de caixa, gastos, etc.).
 router.put('/:id/reabrir', requireRole('ADMIN'), ctrl.reabrir);
+// Exclusão definitiva (linha some do banco) — mesma trava de permissão de "reabrir": ação
+// destrutiva e irreversível, só admin. Só aceita ORCAMENTO/CANCELADA (ver vendas.service.excluirVenda).
+router.delete('/:id', requireRole('ADMIN'), ctrl.excluir);
 router.get('/:id/comprovante', ctrl.comprovante);
 
 router.post('/:id/pagamento-maquininha', ctrl.pagarMaquininha);

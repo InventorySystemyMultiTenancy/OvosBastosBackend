@@ -375,4 +375,33 @@ async function reabrirVenda(vendaId) {
   return prisma.venda.findUnique({ where: { id }, include: INCLUDE_PADRAO });
 }
 
-module.exports = { INCLUDE_PADRAO, calcularTotal, processarCheckout, confirmarVenda, reabrirVenda };
+// Apaga a venda de vez (linha some do banco). Só permitido pra ORCAMENTO/CANCELADA — uma
+// venda CONFIRMADA já baixou estoque e pode ter conta a receber/fechamento associado, então
+// precisa passar por reabrirVenda antes (devolve estoque e apaga a conta a receber em aberto)
+// pra só então poder ser excluída. PagamentoPointMP cai junto (onDelete: Cascade no schema).
+async function excluirVenda(vendaId) {
+  const id = Number(vendaId);
+  const venda = await prisma.venda.findUnique({ where: { id }, include: { contaReceber: true, pagamentosPointMP: true } });
+  if (!venda) {
+    throw Object.assign(new Error('Venda não encontrada'), { status: 404 });
+  }
+  if (venda.status === 'CONFIRMADA') {
+    throw Object.assign(
+      new Error('Vendas confirmadas não podem ser excluídas diretamente — reabra a venda antes (devolve o estoque) e depois cancele o orçamento resultante'),
+      { status: 400 }
+    );
+  }
+  if (venda.contaReceber) {
+    throw Object.assign(new Error('Esta venda tem uma conta a receber associada e não pode ser excluída'), { status: 400 });
+  }
+  const cobrancaAprovada = venda.pagamentosPointMP.find((p) => p.status === 'APROVADO');
+  if (cobrancaAprovada) {
+    throw Object.assign(
+      new Error('Esta venda tem um pagamento aprovado na maquininha e não pode ser excluída'),
+      { status: 409 }
+    );
+  }
+  await prisma.venda.delete({ where: { id } });
+}
+
+module.exports = { INCLUDE_PADRAO, calcularTotal, processarCheckout, confirmarVenda, reabrirVenda, excluirVenda };
