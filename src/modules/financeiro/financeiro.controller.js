@@ -1,5 +1,6 @@
 const prisma = require('../../config/db');
 const { custoTotalDosItens } = require('../../utils/custoVenda');
+const { lerDocumentoGasto } = require('./leituraDocumento.service');
 
 const FORMAS_PAGAMENTO = ['PIX', 'DINHEIRO', 'CARTAO', 'BOLETO', 'FIADO'];
 
@@ -301,7 +302,7 @@ async function listarContasPagar(req, res, next) {
 
 async function criarContaPagar(req, res, next) {
   try {
-    const { descricao, fornecedor, valor, vencimento, caixaId, recorrente } = req.body;
+    const { descricao, fornecedor, valor, dataEmissao, vencimento, caixaId, recorrente, pago, pagoEm } = req.body;
     if (!descricao || !valor || !vencimento) {
       return res.status(400).json({ error: 'descricao, valor e vencimento são obrigatórios' });
     }
@@ -310,12 +311,26 @@ async function criarContaPagar(req, res, next) {
         descricao,
         fornecedor,
         valor,
+        dataEmissao: dataEmissao ? new Date(dataEmissao) : null,
         vencimento: new Date(vencimento),
         caixaId: caixaId ? Number(caixaId) : null,
         recorrente: Boolean(recorrente),
+        pago: Boolean(pago),
+        pagoEm: pago ? (pagoEm ? new Date(pagoEm) : new Date()) : null,
       },
     });
     res.status(201).json(conta);
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Só lê o documento e devolve os campos sugeridos — quem grava é o POST /contas-pagar depois
+// que o admin confere o formulário preenchido.
+async function lerDocumentoContaPagar(req, res, next) {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Envie uma imagem ou um PDF da conta' });
+    res.json(await lerDocumentoGasto(req.file));
   } catch (err) {
     next(err);
   }
@@ -463,6 +478,23 @@ async function resumoPorCaixa(req, res, next) {
   }
 }
 
+// Contas a pagar ainda não pagas com vencimento dentro de [inicio, fim], incluindo os meses
+// projetados de contas fixas mensais (que não existem como linha no banco até serem pagos).
+async function contasPagarEmAbertoNoPeriodo(inicio, fim) {
+  const mesesStr = [];
+  for (let d = new Date(inicio.getFullYear(), inicio.getMonth(), 1); d <= fim; d.setMonth(d.getMonth() + 1)) {
+    mesesStr.push(chaveMes(d));
+  }
+  const porMes = await Promise.all(
+    mesesStr.map((mesStr) =>
+      listarContasComRecorrencia({ delegate: prisma.contaPagar, include: { caixa: true }, mesStr })
+    )
+  );
+  return porMes
+    .flat()
+    .filter((c) => !c.pago && new Date(c.vencimento) >= inicio && new Date(c.vencimento) <= fim);
+}
+
 async function relatorioPeriodo(req, res, next) {
   try {
     const { de, ate } = req.query;
@@ -473,12 +505,13 @@ async function relatorioPeriodo(req, res, next) {
     const fim = new Date(ate);
     fim.setHours(23, 59, 59, 999);
 
-    const [contasPagas, vendasConfirmadas, itensVendidos] = await Promise.all([
+    const [contasPagas, contasEmAberto, vendasConfirmadas, itensVendidos] = await Promise.all([
       prisma.contaPagar.findMany({
         where: { pago: true, pagoEm: { gte: inicio, lte: fim } },
         include: { caixa: true },
         orderBy: { pagoEm: 'asc' },
       }),
+      contasPagarEmAbertoNoPeriodo(inicio, fim),
       prisma.venda.aggregate({
         where: { status: 'CONFIRMADA', confirmadaEm: { gte: inicio, lte: fim } },
         _sum: { total: true },
@@ -498,17 +531,22 @@ async function relatorioPeriodo(req, res, next) {
     ]);
 
     const despesasTotal = contasPagas.reduce((soma, c) => soma + Number(c.valor), 0);
+    const despesasEmAbertoTotal = contasEmAberto.reduce((soma, c) => soma + Number(c.valor), 0);
     const custoProdutosTotal = custoTotalDosItens(itensVendidos);
     const faturamento = Number(vendasConfirmadas._sum.total || 0);
 
     // Lucro é só a margem dos itens vendidos (faturamento - custo dos produtos) — despesas
-    // pagas ficam à parte, mostradas mas não descontadas do lucro.
+    // pagas ficam à parte em `despesasTotal`; `saldoFinal` é o que sobra depois delas.
+    const lucro = faturamento - custoProdutosTotal;
     res.json({
       contasPagas,
+      contasEmAberto,
       faturamento,
       despesasTotal,
+      despesasEmAbertoTotal,
       custoProdutosTotal,
-      lucro: faturamento - custoProdutosTotal,
+      lucro,
+      saldoFinal: lucro - despesasTotal,
     });
   } catch (err) {
     next(err);
@@ -578,6 +616,7 @@ module.exports = {
   cancelarRecorrenciaContaReceber,
   listarContasPagar,
   criarContaPagar,
+  lerDocumentoContaPagar,
   pagarContaPagar,
   pagarMesContaPagar,
   cancelarRecorrenciaContaPagar,

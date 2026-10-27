@@ -480,6 +480,9 @@ model ContaPagar {
   caixaId    Int?
   caixa      Caixa?    @relation(fields: [caixaId], references: [id])
   valor      Decimal   @db.Decimal(12, 2)
+  // Data do documento (emissão da nota/boleto/recibo) — opcional, preenchida principalmente
+  // quando a conta é lida de uma foto/PDF pela IA (ver leituraDocumento.service.js).
+  dataEmissao DateTime?
   vencimento DateTime
   pago       Boolean   @default(false)
   pagoEm     DateTime?

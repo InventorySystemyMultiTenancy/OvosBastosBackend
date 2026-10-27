@@ -8,6 +8,10 @@ function errorHandler(err, req, res, next) {
     return res.status(404).json({ error: 'Registro não encontrado' });
   }
 
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(400).json({ error: 'Arquivo grande demais' });
+  }
+
   const status = err.status || 500;
   res.status(status).json({ error: err.message || 'Erro interno do servidor' });
 }

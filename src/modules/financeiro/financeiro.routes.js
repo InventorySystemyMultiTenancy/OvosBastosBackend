@@ -1,5 +1,6 @@
 const { Router } = require('express');
 const { authenticate, requireRole } = require('../../middleware/auth');
+const { uploadDocumentoGasto } = require('../../config/upload');
 const ctrl = require('./financeiro.controller');
 
 const router = Router();
@@ -18,6 +19,7 @@ router.put('/contas-receber/:id/cancelar-recorrencia', ctrl.cancelarRecorrenciaC
 
 router.get('/contas-pagar', ctrl.listarContasPagar);
 router.post('/contas-pagar', ctrl.criarContaPagar);
+router.post('/contas-pagar/ler-documento', uploadDocumentoGasto.single('documento'), ctrl.lerDocumentoContaPagar);
 router.put('/contas-pagar/:id/pagar', ctrl.pagarContaPagar);
 router.post('/contas-pagar/:id/pagar-mes', ctrl.pagarMesContaPagar);
 router.put('/contas-pagar/:id/cancelar-recorrencia', ctrl.cancelarRecorrenciaContaPagar);

@@ -24,4 +24,18 @@ const uploadFotoUsuario = multer({
   limits: { fileSize: 5 * 1024 * 1024 },
 });
 
-module.exports = { uploadImagemProduto, uploadFotoUsuario };
+// Foto ou PDF de uma conta/nota/boleto pra IA ler e virar conta a pagar (ver
+// financeiro/leituraDocumento.service.js). Também só em memória — o arquivo vai direto pra
+// OpenAI e não é guardado.
+const uploadDocumentoGasto = multer({
+  storage: multer.memoryStorage(),
+  fileFilter(req, file, cb) {
+    if (!file.mimetype.startsWith('image/') && file.mimetype !== 'application/pdf') {
+      return cb(Object.assign(new Error('Envie uma imagem ou um PDF'), { status: 400 }));
+    }
+    cb(null, true);
+  },
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
+
+module.exports = { uploadImagemProduto, uploadFotoUsuario, uploadDocumentoGasto };
