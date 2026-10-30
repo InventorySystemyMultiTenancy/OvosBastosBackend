@@ -42,7 +42,7 @@ function montarPrompt(catalogo) {
     '{"descricao": string, "fornecedor": string|null, "valor": number|null, "dataEmissao": "AAAA-MM-DD"|null, ' +
     '"vencimento": "AAAA-MM-DD"|null, "pago": boolean, "dataPagamento": "AAAA-MM-DD"|null, ' +
     '"itens": [{"descricao": string, "produtoId": number|null, "nivelVendaId": number|null, ' +
-    '"quantidade": number, "unidadesBaseTotal": number|null, "valorTotal": number|null}]}. ' +
+    '"quantidade": number, "unidadesBaseTotal": number|null, "valorUnitario": number|null}]}. ' +
     'Regras gerais: "descricao" é um resumo curto em português do que é a despesa (ex: "Conta de luz outubro", ' +
     '"Compra de ovos"). "fornecedor" é o nome de quem emitiu/cobra (empresa ou pessoa), ou null se ' +
     'não aparecer. "valor" é o valor total a pagar em reais, como número (ex: 1234.56). "dataEmissao" é a ' +
@@ -51,15 +51,17 @@ function montarPrompt(catalogo) {
     'recibo de quitação, cupom fiscal de compra paga no ato); na dúvida, false. "dataPagamento" só se pago ' +
     'for true e a data aparecer. Nunca invente dados: use null para o que não estiver no documento. ' +
     'Regras dos itens: se o documento for uma compra de mercadorias, liste em "itens" cada linha comprada. ' +
-    'Compare cada linha com o CATÁLOGO abaixo pelo nome/significado (ex: "CX OVO BCO EXTRA 30DZ" pode ser o ' +
-    'produto "Ovo Branco Extra" no nível "Caixa"). "produtoId" é o do catálogo, ou null se a linha não ' +
+    'Compare cada linha com o CATÁLOGO abaixo pelo nome/significado (ex: "OVOS EXTRA BRANCO" pode ser o ' +
+    'produto "Ovo Branco Extra"). "produtoId" é o do catálogo, ou null se a linha não ' +
     'corresponder com segurança a nenhum produto. "nivelVendaId" é o nível do catálogo na mesma embalagem em ' +
-    'que o documento conta a quantidade (caixa, bandeja, dúzia, unidade...), e "quantidade" é quantas ' +
-    'dessa embalagem chegaram. Se a embalagem do documento não bater com nenhum nível, use nivelVendaId null ' +
+    'que o documento conta a quantidade (unidade de medida "CX" = nível "Caixa" daquele produto; também ' +
+    'bandeja, dúzia, unidade...), e "quantidade" é quantas dessa embalagem chegaram (coluna Qtde; ' +
+    '"5,000" = 5). Se a embalagem do documento não bater com nenhum nível, use nivelVendaId null ' +
     'e informe em "unidadesBaseTotal" o total de unidades-base (ex: ovos) que chegaram, se der para calcular ' +
-    'com segurança pelo documento. "valorTotal" é quanto foi pago por aquela linha inteira (quantidade × preço, ' +
-    'já com desconto da linha se houver); se o documento só mostrar o total geral e houver uma única linha, use ' +
-    'o total. Se não for compra de mercadorias (conta de luz, aluguel, serviço), "itens" é []. ' +
+    'com segurança pelo documento. "valorUnitario" é o preço de UMA embalagem daquela linha, exatamente como ' +
+    'na coluna de valor unitário (ex: "Vlr.Unitário"), SEM aplicar descontos/acréscimos da linha; se o ' +
+    'documento só mostrar o total da linha, divida pela quantidade. ' +
+    'Se não for compra de mercadorias (conta de luz, aluguel, serviço), "itens" é []. ' +
     `CATÁLOGO: ${JSON.stringify(catalogoPrompt)}`
   );
 }
@@ -99,17 +101,20 @@ function normalizarItens(itensIA, catalogo) {
       return;
     }
 
-    const valorTotal = numeroPositivo(item.valorTotal);
+    const valorUnitario = numeroPositivo(item.valorUnitario);
     const nivel = produto.niveisVenda.find((n) => n.id === Number(item.nivelVendaId));
     const quantidade = numeroPositivo(item.quantidade);
     if (nivel && quantidade && Number.isInteger(quantidade)) {
-      itens.push({ descricao, produtoId: produto.id, nivelVendaId: nivel.id, quantidade, valorTotal });
+      itens.push({ descricao, produtoId: produto.id, nivelVendaId: nivel.id, quantidade, valorUnitario });
       return;
     }
 
+    // Sem nível correspondente: quantidade vira grão-base e o valor unitário é reescalado de
+    // "por embalagem do documento" pra "por grão-base", pra manter quantidade × valor igual.
     const unidadesBase = numeroPositivo(item.unidadesBaseTotal);
     if (unidadesBase && Number.isInteger(unidadesBase)) {
-      itens.push({ descricao, produtoId: produto.id, nivelVendaId: null, quantidade: unidadesBase, valorTotal });
+      const valorPorGrao = valorUnitario && quantidade ? Number(((valorUnitario * quantidade) / unidadesBase).toFixed(6)) : null;
+      itens.push({ descricao, produtoId: produto.id, nivelVendaId: null, quantidade: unidadesBase, valorUnitario: valorPorGrao });
       return;
     }
 

@@ -301,20 +301,31 @@ async function listarContasPagar(req, res, next) {
   }
 }
 
+// Frete pago por embalagem comprada (ex: R$ 10 por caixa), somado ao valor unitário de cada
+// embalagem antes de dividir pelos grãos dela — o custo real de cada ovo inclui o frete.
+const FRETE_POR_EMBALAGEM_PADRAO = 10;
+
 // Itens de uma conta a pagar que é compra de mercadoria (vindos da leitura por IA, conferidos
-// no formulário) → itens de recebimento: tudo convertido pra grão-base e somado por produto
-// (o recebimento só aceita uma linha por produto). O custo novo por grão-base sai de quanto
-// foi pago ÷ quantos grãos chegaram — só quando toda linha daquele produto tem valor; senão
-// o custo atual fica como está.
-async function montarItensRecebimento(itensEstoque) {
+// no formulário) → itens de recebimento: tudo convertido pra grão-base (embalagens × grãos
+// do nível, ex: 5 caixas × 360) e somado por produto (o recebimento só aceita uma linha por
+// produto). Custo novo por grão-base = (valor unitário da embalagem + frete) ÷ grãos da
+// embalagem, ex: (138 + 10) ÷ 360 — ponderado se o mesmo produto vier em mais de uma linha.
+// Só muda o custo quando toda linha daquele produto tem valor; senão o custo atual fica.
+// Linha direto em grão-base (sem nível) não leva frete: ele é por embalagem, não por ovo.
+async function montarItensRecebimento(itensEstoque, fretePorEmbalagem = FRETE_POR_EMBALAGEM_PADRAO) {
   if (!Array.isArray(itensEstoque) || itensEstoque.length === 0) return [];
+
+  const frete = Number(fretePorEmbalagem);
+  if (Number.isNaN(frete) || frete < 0) {
+    throw Object.assign(new Error('Frete por embalagem inválido'), { status: 400 });
+  }
 
   const linhas = itensEstoque
     .map((i) => ({
       produtoId: Number(i.produtoId),
       nivelVendaId: i.nivelVendaId ? Number(i.nivelVendaId) : null,
       quantidade: Number(i.quantidade),
-      valorTotal: i.valorTotal !== undefined && i.valorTotal !== null && i.valorTotal !== '' ? Number(i.valorTotal) : null,
+      valorUnitario: i.valorUnitario !== undefined && i.valorUnitario !== null && i.valorUnitario !== '' ? Number(i.valorUnitario) : null,
     }))
     .filter((i) => i.produtoId && i.quantidade > 0);
 
@@ -322,7 +333,7 @@ async function montarItensRecebimento(itensEstoque) {
     if (!Number.isInteger(l.quantidade)) {
       throw Object.assign(new Error('Quantidade de estoque deve ser um número inteiro'), { status: 400 });
     }
-    if (l.valorTotal !== null && (Number.isNaN(l.valorTotal) || l.valorTotal < 0)) {
+    if (l.valorUnitario !== null && (Number.isNaN(l.valorUnitario) || l.valorUnitario < 0)) {
       throw Object.assign(new Error('Valor de item de estoque inválido'), { status: 400 });
     }
   }
@@ -332,36 +343,40 @@ async function montarItensRecebimento(itensEstoque) {
 
   const porProduto = new Map();
   for (const l of linhas) {
-    let grao = l.quantidade;
+    let graoPorEmbalagem = 1;
     if (l.nivelVendaId) {
       const nivel = niveis.find((n) => n.id === l.nivelVendaId && n.produtoId === l.produtoId);
       if (!nivel || !nivel.ativo) {
         throw Object.assign(new Error(`Nível de venda ${l.nivelVendaId} não pertence ao produto ${l.produtoId}`), { status: 400 });
       }
-      grao = l.quantidade * nivel.quantidadeGrao;
+      graoPorEmbalagem = nivel.quantidadeGrao;
     }
+    const freteLinha = graoPorEmbalagem > 1 ? frete : 0;
     const atual = porProduto.get(l.produtoId) || { grao: 0, valor: 0, semValor: false };
-    atual.grao += grao;
-    if (l.valorTotal === null) atual.semValor = true;
-    else atual.valor += l.valorTotal;
+    atual.grao += l.quantidade * graoPorEmbalagem;
+    if (l.valorUnitario === null) atual.semValor = true;
+    else atual.valor += l.quantidade * (l.valorUnitario + freteLinha);
     porProduto.set(l.produtoId, atual);
   }
 
   return Array.from(porProduto, ([produtoId, t]) => ({
     produtoId,
     quantidade: t.grao,
-    precoCusto: t.semValor || t.valor <= 0 ? undefined : Number((t.valor / t.grao).toFixed(4)),
+    precoCusto: t.semValor || t.valor <= 0 ? undefined : Number((t.valor / t.grao).toFixed(6)),
   }));
 }
 
 async function criarContaPagar(req, res, next) {
   try {
-    const { descricao, fornecedor, valor, dataEmissao, vencimento, caixaId, recorrente, pago, pagoEm, itensEstoque } = req.body;
+    const { descricao, fornecedor, valor, dataEmissao, vencimento, caixaId, recorrente, pago, pagoEm, itensEstoque, fretePorEmbalagem } = req.body;
     if (!descricao || !valor || !vencimento) {
       return res.status(400).json({ error: 'descricao, valor e vencimento são obrigatórios' });
     }
     // Validado antes de criar a conta — item inválido não deixa uma conta órfã pra trás.
-    const itensRecebimento = await montarItensRecebimento(itensEstoque);
+    const itensRecebimento = await montarItensRecebimento(
+      itensEstoque,
+      fretePorEmbalagem !== undefined && fretePorEmbalagem !== '' ? fretePorEmbalagem : FRETE_POR_EMBALAGEM_PADRAO
+    );
 
     const conta = await prisma.contaPagar.create({
       data: {
