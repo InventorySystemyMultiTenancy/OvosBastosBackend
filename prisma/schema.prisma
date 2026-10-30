@@ -140,7 +140,7 @@ model Produto {
   // Preço de custo, sempre por grão-base (o grão mais fino vendável deste produto, ex: 1 ovo
   // — ver NivelVendaProduto). Cadastrado na tela "por nível de referência" e convertido pra
   // grão-base ao salvar (ver produtos.controller.js).
-  precoCusto    Decimal? @db.Decimal(12, 2)
+  precoCusto    Decimal? @db.Decimal(12, 4)
   // Pool central de estoque "recebido e ainda não distribuído" às unidades — não é mais
   // "estoque disponível para venda" quando a venda tem caixa associada (ver EstoqueCaixa).
   // Sempre contado em grão-base (o menor grão vendável do produto — ver NivelVendaProduto).
@@ -447,7 +447,7 @@ model ItemVenda {
   // custo de um produto num recebimento novo mudaria retroativamente o custo — e o Lucro
   // Líquido — de vendas já feitas com o estoque antigo, mais barato. Custo de venda antiga
   // sempre usa o custo que valia quando ela aconteceu (ver custoVenda.js).
-  custoUnit Decimal? @db.Decimal(12, 2)
+  custoUnit Decimal? @db.Decimal(12, 4)
 }
 
 model ContaReceber {

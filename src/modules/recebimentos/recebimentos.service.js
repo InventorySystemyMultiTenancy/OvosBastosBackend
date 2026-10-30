@@ -20,7 +20,10 @@ async function obter(id) {
   return recebimento;
 }
 
-async function criar({ itens, observacao, criadoPorId }) {
+// jaFinalizado: entrada que já veio com a dívida registrada em outro lugar (ex: conta a pagar
+// lida por IA — ver financeiro.controller.criarContaPagar). Pula a etapa de fornecedor (que
+// geraria uma segunda dívida em Financeiro → Fornecedores) e vai direto pra distribuição.
+async function criar({ itens, observacao, criadoPorId, jaFinalizado = false }) {
   if (!Array.isArray(itens)) {
     throw Object.assign(new Error('itens é obrigatório'), { status: 400 });
   }
@@ -77,6 +80,7 @@ async function criar({ itens, observacao, criadoPorId }) {
       data: {
         observacao: observacao || null,
         criadoPorId: criadoPorId || null,
+        ...(jaFinalizado ? { status: 'AGUARDANDO_DISTRIBUICAO', finalizadoEm: new Date() } : {}),
         itens: { create: itensValidos.map((i) => ({ produtoId: i.produtoId, quantidadeRecebida: i.quantidadeBase })) },
       },
     });

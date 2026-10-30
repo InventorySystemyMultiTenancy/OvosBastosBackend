@@ -1,24 +1,66 @@
+const prisma = require('../../config/db');
+
 // Leitura de conta a pagar por IA: recebe a foto ou o PDF de uma nota, boleto, recibo ou
-// fatura e devolve os campos já no formato do formulário de "Nova conta a pagar". Não grava
-// nada — o admin confere o que a IA leu e salva pelo fluxo normal (POST /contas-pagar).
+// fatura e devolve os campos já no formato do formulário de "Nova conta a pagar". Se for uma
+// compra de produtos do catálogo, devolve também os itens (produto, nível, quantidade, valor)
+// pra entrarem no estoque. Não grava nada — o admin confere o que a IA leu e salva pelo fluxo
+// normal (POST /contas-pagar), que é quem dá a entrada no estoque e atualiza o custo.
 
 const DATA_ISO = /^\d{4}-\d{2}-\d{2}$/;
 
-function montarPrompt() {
+async function carregarCatalogo() {
+  const produtos = await prisma.produto.findMany({
+    where: { ativo: true },
+    orderBy: { nome: 'asc' },
+    select: {
+      id: true,
+      nome: true,
+      tipo: true,
+      niveisVenda: {
+        where: { ativo: true },
+        orderBy: { quantidadeGrao: 'asc' },
+        select: { id: true, nome: true, quantidadeGrao: true },
+      },
+    },
+  });
+  return produtos;
+}
+
+function montarPrompt(catalogo) {
   const hoje = new Date().toISOString().slice(0, 10);
+  const catalogoPrompt = catalogo.map((p) => ({
+    produtoId: p.id,
+    nome: p.nome,
+    tipo: p.tipo || undefined,
+    niveis: p.niveisVenda.map((n) => ({ nivelVendaId: n.id, nome: n.nome, unidadesBase: n.quantidadeGrao })),
+  }));
+
   return (
     'Você lê documentos de despesas (notas fiscais, boletos, recibos, faturas de água/luz/internet, ' +
-    'cupons) de uma distribuidora de ovos e extrai os dados para cadastrar uma conta a pagar. ' +
-    `Hoje é ${hoje}. Responda SOMENTE com JSON válido, sem texto fora do JSON, no formato exato: ` +
+    'cupons, pedidos de compra) de uma distribuidora de ovos e extrai os dados para cadastrar uma conta a ' +
+    `pagar. Hoje é ${hoje}. Responda SOMENTE com JSON válido, sem texto fora do JSON, no formato exato: ` +
     '{"descricao": string, "fornecedor": string|null, "valor": number|null, "dataEmissao": "AAAA-MM-DD"|null, ' +
-    '"vencimento": "AAAA-MM-DD"|null, "pago": boolean, "dataPagamento": "AAAA-MM-DD"|null}. ' +
-    'Regras: "descricao" é um resumo curto em português do que é a despesa (ex: "Conta de luz outubro", ' +
-    '"Compra de embalagens"). "fornecedor" é o nome de quem emitiu/cobra (empresa ou pessoa), ou null se ' +
+    '"vencimento": "AAAA-MM-DD"|null, "pago": boolean, "dataPagamento": "AAAA-MM-DD"|null, ' +
+    '"itens": [{"descricao": string, "produtoId": number|null, "nivelVendaId": number|null, ' +
+    '"quantidade": number, "unidadesBaseTotal": number|null, "valorTotal": number|null}]}. ' +
+    'Regras gerais: "descricao" é um resumo curto em português do que é a despesa (ex: "Conta de luz outubro", ' +
+    '"Compra de ovos"). "fornecedor" é o nome de quem emitiu/cobra (empresa ou pessoa), ou null se ' +
     'não aparecer. "valor" é o valor total a pagar em reais, como número (ex: 1234.56). "dataEmissao" é a ' +
     'data do documento/emissão. "vencimento" só se o documento mostrar uma data de vencimento. "pago" só é ' +
     'true se o documento indicar claramente que já foi pago (comprovante de pagamento, carimbo "PAGO", ' +
     'recibo de quitação, cupom fiscal de compra paga no ato); na dúvida, false. "dataPagamento" só se pago ' +
-    'for true e a data aparecer. Nunca invente dados: use null para o que não estiver no documento.'
+    'for true e a data aparecer. Nunca invente dados: use null para o que não estiver no documento. ' +
+    'Regras dos itens: se o documento for uma compra de mercadorias, liste em "itens" cada linha comprada. ' +
+    'Compare cada linha com o CATÁLOGO abaixo pelo nome/significado (ex: "CX OVO BCO EXTRA 30DZ" pode ser o ' +
+    'produto "Ovo Branco Extra" no nível "Caixa"). "produtoId" é o do catálogo, ou null se a linha não ' +
+    'corresponder com segurança a nenhum produto. "nivelVendaId" é o nível do catálogo na mesma embalagem em ' +
+    'que o documento conta a quantidade (caixa, bandeja, dúzia, unidade...), e "quantidade" é quantas ' +
+    'dessa embalagem chegaram. Se a embalagem do documento não bater com nenhum nível, use nivelVendaId null ' +
+    'e informe em "unidadesBaseTotal" o total de unidades-base (ex: ovos) que chegaram, se der para calcular ' +
+    'com segurança pelo documento. "valorTotal" é quanto foi pago por aquela linha inteira (quantidade × preço, ' +
+    'já com desconto da linha se houver); se o documento só mostrar o total geral e houver uma única linha, use ' +
+    'o total. Se não for compra de mercadorias (conta de luz, aluguel, serviço), "itens" é []. ' +
+    `CATÁLOGO: ${JSON.stringify(catalogoPrompt)}`
   );
 }
 
@@ -36,9 +78,51 @@ function dataValida(valor) {
   return Number.isNaN(new Date(valor).getTime()) ? null : valor;
 }
 
-function normalizar(json) {
+function numeroPositivo(valor) {
+  const n = Number(valor);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+// Cruza os itens da IA com o catálogo de verdade: descarta ids inventados e devolve a
+// quantidade sempre num nível existente ou, sem nível, direto em grão-base (nivelVendaId null).
+function normalizarItens(itensIA, catalogo) {
+  const itens = [];
+  const naoIdentificados = [];
+  if (!Array.isArray(itensIA)) return { itens, naoIdentificados };
+
+  const produtosPorId = new Map(catalogo.map((p) => [p.id, p]));
+  itensIA.forEach((item) => {
+    const descricao = typeof item.descricao === 'string' ? item.descricao.trim() : '';
+    const produto = produtosPorId.get(Number(item.produtoId));
+    if (!produto) {
+      if (descricao) naoIdentificados.push(descricao);
+      return;
+    }
+
+    const valorTotal = numeroPositivo(item.valorTotal);
+    const nivel = produto.niveisVenda.find((n) => n.id === Number(item.nivelVendaId));
+    const quantidade = numeroPositivo(item.quantidade);
+    if (nivel && quantidade && Number.isInteger(quantidade)) {
+      itens.push({ descricao, produtoId: produto.id, nivelVendaId: nivel.id, quantidade, valorTotal });
+      return;
+    }
+
+    const unidadesBase = numeroPositivo(item.unidadesBaseTotal);
+    if (unidadesBase && Number.isInteger(unidadesBase)) {
+      itens.push({ descricao, produtoId: produto.id, nivelVendaId: null, quantidade: unidadesBase, valorTotal });
+      return;
+    }
+
+    naoIdentificados.push(descricao || produto.nome);
+  });
+
+  return { itens, naoIdentificados };
+}
+
+function normalizar(json, catalogo) {
   const valor = Number(json.valor);
   const pago = json.pago === true;
+  const { itens, naoIdentificados } = normalizarItens(json.itens, catalogo);
   return {
     descricao: typeof json.descricao === 'string' && json.descricao.trim() ? json.descricao.trim() : '',
     fornecedor: typeof json.fornecedor === 'string' && json.fornecedor.trim() ? json.fornecedor.trim() : '',
@@ -47,6 +131,8 @@ function normalizar(json) {
     vencimento: dataValida(json.vencimento),
     pago,
     dataPagamento: pago ? dataValida(json.dataPagamento) : null,
+    itensEstoque: itens,
+    itensNaoIdentificados: naoIdentificados,
   };
 }
 
@@ -56,6 +142,7 @@ async function lerDocumentoGasto(arquivo) {
     throw Object.assign(new Error('Leitura por IA indisponível: OPENAI_API_KEY não configurada'), { status: 400 });
   }
   const modelo = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+  const catalogo = await carregarCatalogo();
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -66,7 +153,7 @@ async function lerDocumentoGasto(arquivo) {
     body: JSON.stringify({
       model: modelo,
       messages: [
-        { role: 'system', content: montarPrompt() },
+        { role: 'system', content: montarPrompt(catalogo) },
         {
           role: 'user',
           content: [{ type: 'text', text: 'Extraia os dados da conta a pagar deste documento.' }, parteDoArquivo(arquivo)],
@@ -93,7 +180,7 @@ async function lerDocumentoGasto(arquivo) {
     throw Object.assign(new Error('Resposta da OpenAI não é um JSON válido'), { status: 502 });
   }
 
-  return normalizar(json);
+  return normalizar(json, catalogo);
 }
 
 module.exports = { lerDocumentoGasto };

@@ -1,6 +1,7 @@
 const prisma = require('../../config/db');
 const { custoTotalDosItens } = require('../../utils/custoVenda');
 const { lerDocumentoGasto } = require('./leituraDocumento.service');
+const recebimentosService = require('../recebimentos/recebimentos.service');
 
 const FORMAS_PAGAMENTO = ['PIX', 'DINHEIRO', 'CARTAO', 'BOLETO', 'FIADO'];
 
@@ -300,12 +301,68 @@ async function listarContasPagar(req, res, next) {
   }
 }
 
+// Itens de uma conta a pagar que é compra de mercadoria (vindos da leitura por IA, conferidos
+// no formulário) → itens de recebimento: tudo convertido pra grão-base e somado por produto
+// (o recebimento só aceita uma linha por produto). O custo novo por grão-base sai de quanto
+// foi pago ÷ quantos grãos chegaram — só quando toda linha daquele produto tem valor; senão
+// o custo atual fica como está.
+async function montarItensRecebimento(itensEstoque) {
+  if (!Array.isArray(itensEstoque) || itensEstoque.length === 0) return [];
+
+  const linhas = itensEstoque
+    .map((i) => ({
+      produtoId: Number(i.produtoId),
+      nivelVendaId: i.nivelVendaId ? Number(i.nivelVendaId) : null,
+      quantidade: Number(i.quantidade),
+      valorTotal: i.valorTotal !== undefined && i.valorTotal !== null && i.valorTotal !== '' ? Number(i.valorTotal) : null,
+    }))
+    .filter((i) => i.produtoId && i.quantidade > 0);
+
+  for (const l of linhas) {
+    if (!Number.isInteger(l.quantidade)) {
+      throw Object.assign(new Error('Quantidade de estoque deve ser um número inteiro'), { status: 400 });
+    }
+    if (l.valorTotal !== null && (Number.isNaN(l.valorTotal) || l.valorTotal < 0)) {
+      throw Object.assign(new Error('Valor de item de estoque inválido'), { status: 400 });
+    }
+  }
+
+  const nivelIds = linhas.filter((l) => l.nivelVendaId).map((l) => l.nivelVendaId);
+  const niveis = nivelIds.length ? await prisma.nivelVendaProduto.findMany({ where: { id: { in: nivelIds } } }) : [];
+
+  const porProduto = new Map();
+  for (const l of linhas) {
+    let grao = l.quantidade;
+    if (l.nivelVendaId) {
+      const nivel = niveis.find((n) => n.id === l.nivelVendaId && n.produtoId === l.produtoId);
+      if (!nivel || !nivel.ativo) {
+        throw Object.assign(new Error(`Nível de venda ${l.nivelVendaId} não pertence ao produto ${l.produtoId}`), { status: 400 });
+      }
+      grao = l.quantidade * nivel.quantidadeGrao;
+    }
+    const atual = porProduto.get(l.produtoId) || { grao: 0, valor: 0, semValor: false };
+    atual.grao += grao;
+    if (l.valorTotal === null) atual.semValor = true;
+    else atual.valor += l.valorTotal;
+    porProduto.set(l.produtoId, atual);
+  }
+
+  return Array.from(porProduto, ([produtoId, t]) => ({
+    produtoId,
+    quantidade: t.grao,
+    precoCusto: t.semValor || t.valor <= 0 ? undefined : Number((t.valor / t.grao).toFixed(4)),
+  }));
+}
+
 async function criarContaPagar(req, res, next) {
   try {
-    const { descricao, fornecedor, valor, dataEmissao, vencimento, caixaId, recorrente, pago, pagoEm } = req.body;
+    const { descricao, fornecedor, valor, dataEmissao, vencimento, caixaId, recorrente, pago, pagoEm, itensEstoque } = req.body;
     if (!descricao || !valor || !vencimento) {
       return res.status(400).json({ error: 'descricao, valor e vencimento são obrigatórios' });
     }
+    // Validado antes de criar a conta — item inválido não deixa uma conta órfã pra trás.
+    const itensRecebimento = await montarItensRecebimento(itensEstoque);
+
     const conta = await prisma.contaPagar.create({
       data: {
         descricao,
@@ -319,7 +376,23 @@ async function criarContaPagar(req, res, next) {
         pagoEm: pago ? (pagoEm ? new Date(pagoEm) : new Date()) : null,
       },
     });
-    res.status(201).json(conta);
+
+    let recebimento = null;
+    if (itensRecebimento.length > 0) {
+      try {
+        recebimento = await recebimentosService.criar({
+          itens: itensRecebimento,
+          observacao: `Compra da conta a pagar #${conta.id} — ${descricao}${fornecedor ? ` (${fornecedor})` : ''}`,
+          criadoPorId: req.usuario?.id,
+          jaFinalizado: true,
+        });
+      } catch (err) {
+        await prisma.contaPagar.delete({ where: { id: conta.id } });
+        throw err;
+      }
+    }
+
+    res.status(201).json({ ...conta, recebimentoId: recebimento?.id || null });
   } catch (err) {
     next(err);
   }
