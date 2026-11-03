@@ -48,9 +48,15 @@ async function resumo(req, res, next) {
     }
 
     // Período anterior de mesmo tamanho, usado só pra calcular a variação % mostrada
-    // nos cards do topo do dashboard (ex: "+12,5% vs 30 dias anteriores").
-    const desdeAnterior = new Date(desde);
-    desdeAnterior.setDate(desdeAnterior.getDate() - dias);
+    // nos cards do topo do dashboard (ex: "+12,5% vs 7 dias anteriores"). Quando o período é
+    // um mês fechado (botões "mês anterior"/"mês retrasado"), compara com o mês fechado de
+    // antes dele (outubro vs setembro), não com os mesmos 31 dias pra trás.
+    const ehMesFechado =
+      req.query.de && req.query.ate && desde.getDate() === 1 &&
+      ate.getMonth() === desde.getMonth() && ate.getFullYear() === desde.getFullYear() &&
+      ate.getDate() === new Date(desde.getFullYear(), desde.getMonth() + 1, 0).getDate();
+    const desdeAnterior = ehMesFechado ? new Date(desde.getFullYear(), desde.getMonth() - 1, 1) : new Date(desde);
+    if (!ehMesFechado) desdeAnterior.setDate(desdeAnterior.getDate() - dias);
 
     const agora = new Date();
 

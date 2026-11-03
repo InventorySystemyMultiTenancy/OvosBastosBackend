@@ -11,6 +11,7 @@ router.get('/', ctrl.listar);
 router.get('/:id/estoque', ctrl.estoquePorCaixa);
 router.post('/', requireRole('ADMIN'), ctrl.criar);
 router.put('/:id', requireRole('ADMIN'), ctrl.atualizar);
+router.put('/:id/acrescimos/:nivelVendaId', requireRole('ADMIN'), ctrl.definirAcrescimo);
 
 router.get('/:id/sessao-atual', sessoesCtrl.sessaoAtual);
 router.post('/:id/sessoes/abrir', sessoesCtrl.abrir);

@@ -188,7 +188,26 @@ model NivelVendaProduto {
   ativo          Boolean  @default(true)
   createdAt      DateTime @default(now())
 
-  itensVenda ItemVenda[]
+  itensVenda       ItemVenda[]
+  acrescimosCaixa  AcrescimoCaixaNivel[]
+}
+
+// Valor extra que uma unidade (caixa) cobra a mais num item do catálogo (um nível de venda),
+// em cima do preço normal do nível — unidades diferentes vendem o mesmo produto por preços
+// diferentes, mas todas puxam o mesmo preço/custo base do estoque. Não muda o preço do nível,
+// o custo nem o estoque: só soma no preço de venda daquele nível naquele caixa (ver
+// caixas.controller.estoquePorCaixa e vendas.service.processarCheckout), e vai junto no
+// ItemVenda.precoUnit como parte do preço final — nota, PDF e carrinho só mostram o total.
+model AcrescimoCaixaNivel {
+  id           Int               @id @default(autoincrement())
+  caixaId      Int
+  caixa        Caixa             @relation(fields: [caixaId], references: [id], onDelete: Cascade)
+  nivelVendaId Int
+  nivelVenda   NivelVendaProduto @relation(fields: [nivelVendaId], references: [id], onDelete: Cascade)
+  valor        Decimal           @db.Decimal(12, 2)
+  updatedAt    DateTime          @updatedAt
+
+  @@unique([caixaId, nivelVendaId])
 }
 
 model Lote {
@@ -364,6 +383,7 @@ model Caixa {
   estoque              EstoqueCaixa[]
   movimentacoesEstoque MovimentacaoEstoque[]
   sessoes              SessaoCaixa[]
+  acrescimosNivel      AcrescimoCaixaNivel[]
 }
 
 // Abertura/fechamento de caixa (sessão de turno): cada vez que um funcionário assume o

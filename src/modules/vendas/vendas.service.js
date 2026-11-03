@@ -1,5 +1,6 @@
 const prisma = require('../../config/db');
 const { exigirCaixaAberto } = require('../caixas/sessoesCaixa.service');
+const { mapaAcrescimos, precoComAcrescimo } = require('../../utils/acrescimoCaixa');
 
 const INCLUDE_PADRAO = {
   cliente: true,
@@ -79,6 +80,9 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
   const niveis = nivelIds.length
     ? await prisma.nivelVendaProduto.findMany({ where: { id: { in: nivelIds } } })
     : [];
+  // Valor extra que este caixa cobra em cada item (ver AcrescimoCaixaNivel) — entra direto no
+  // precoUnit, então nota/PDF/carrinho só veem o preço final. Sem caixa (catálogo online), nada.
+  const acrescimosCaixa = await mapaAcrescimos(caixaId, nivelIds);
 
   // Com caixa selecionada, a unidade só pode vender o que tem alocado a ela (EstoqueCaixa).
   // Sem caixa (ex.: catálogo online), continua vendendo do pool central (Produto.quantidade).
@@ -106,7 +110,7 @@ async function processarCheckout({ clienteId, vendedorId, caixaId, itens, formaP
     if (!nivel || !nivel.ativo) {
       throw Object.assign(new Error(`Nível de venda de "${produto.nome}" não encontrado`), { status: 400 });
     }
-    const precoUnit = nivel.preco;
+    const precoUnit = precoComAcrescimo(nivel.preco, acrescimosCaixa.get(nivel.id));
     const quantidadeGraoPorNivel = nivel.quantidadeGrao;
 
     const item = { quantidade, quantidadeGraoPorNivel };
