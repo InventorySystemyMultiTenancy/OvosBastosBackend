@@ -51,12 +51,25 @@ async function resumo(req, res, next) {
     // nos cards do topo do dashboard (ex: "+12,5% vs 7 dias anteriores"). Quando o período é
     // um mês fechado (botões "mês anterior"/"mês retrasado"), compara com o mês fechado de
     // antes dele (outubro vs setembro), não com os mesmos 31 dias pra trás.
-    const ehMesFechado =
+    // Quando é o mês em andamento (botão "Mês atual": dia 1 até hoje), compara com os mesmos
+    // dias do mês anterior (1 a 3/nov vs 1 a 3/out), pra comparação ser justa.
+    const comecaNoDia1DoMesmoMes =
       req.query.de && req.query.ate && desde.getDate() === 1 &&
-      ate.getMonth() === desde.getMonth() && ate.getFullYear() === desde.getFullYear() &&
-      ate.getDate() === new Date(desde.getFullYear(), desde.getMonth() + 1, 0).getDate();
-    const desdeAnterior = ehMesFechado ? new Date(desde.getFullYear(), desde.getMonth() - 1, 1) : new Date(desde);
-    if (!ehMesFechado) desdeAnterior.setDate(desdeAnterior.getDate() - dias);
+      ate.getMonth() === desde.getMonth() && ate.getFullYear() === desde.getFullYear();
+    const ultimoDiaDoMes = new Date(desde.getFullYear(), desde.getMonth() + 1, 0).getDate();
+    const ehMesFechado = comecaNoDia1DoMesmoMes && ate.getDate() === ultimoDiaDoMes;
+    const ehMesParcial = comecaNoDia1DoMesmoMes && !ehMesFechado;
+    let desdeAnterior, ateAnterior;
+    if (ehMesFechado || ehMesParcial) {
+      desdeAnterior = new Date(desde.getFullYear(), desde.getMonth() - 1, 1);
+      const ultimoDiaMesAnterior = new Date(desde.getFullYear(), desde.getMonth(), 0).getDate();
+      const diaFim = ehMesFechado ? ultimoDiaMesAnterior : Math.min(ate.getDate(), ultimoDiaMesAnterior);
+      ateAnterior = new Date(desde.getFullYear(), desde.getMonth() - 1, diaFim + 1); // exclusivo
+    } else {
+      desdeAnterior = new Date(desde);
+      desdeAnterior.setDate(desdeAnterior.getDate() - dias);
+      ateAnterior = desde;
+    }
 
     const agora = new Date();
 
@@ -145,13 +158,13 @@ async function resumo(req, res, next) {
           })
         : Promise.resolve([]),
       prisma.venda.aggregate({
-        where: { status: 'CONFIRMADA', confirmadaEm: { gte: desdeAnterior, lt: desde } },
+        where: { status: 'CONFIRMADA', confirmadaEm: { gte: desdeAnterior, lt: ateAnterior } },
         _sum: { total: true },
         _count: true,
       }),
       ehAdmin
         ? prisma.contaPagar.aggregate({
-            where: { pago: true, pagoEm: { gte: desdeAnterior, lt: desde } },
+            where: { pago: true, pagoEm: { gte: desdeAnterior, lt: ateAnterior } },
             _sum: { valor: true },
           })
         : Promise.resolve({ _sum: { valor: 0 } }),
@@ -159,7 +172,7 @@ async function resumo(req, res, next) {
       // Líquido) — mesmo formato de itensPeriodo, só que na janela anterior.
       ehAdmin
         ? prisma.itemVenda.findMany({
-            where: { venda: { status: 'CONFIRMADA', confirmadaEm: { gte: desdeAnterior, lt: desde } } },
+            where: { venda: { status: 'CONFIRMADA', confirmadaEm: { gte: desdeAnterior, lt: ateAnterior } } },
             select: {
               quantidade: true,
               quantidadeGraoPorNivel: true,
