@@ -270,14 +270,64 @@ async function cancelarCobranca(vendaId) {
   if (!pagamento) throw erro(404, 'Nenhuma cobrança em aberto para esta venda');
 
   const { accessToken } = credenciaisAtivas(pagamento.caixa);
-  try {
-    await mpClient.cancelarOrder(accessToken, pagamento.paymentIntentId, { atTerminal: pagamento.status === 'EM_PROCESSO' });
-  } catch (err) {
-    if (err.mpStatus !== 404) throw err;
+
+  // Nunca confia no status local pra decidir: ele pode estar defasado em segundos (ex: ainda
+  // "PENDENTE" quando a order já está na tela da maquininha, ou o cliente acabou de pagar).
+  // Antes, o cancelamento marcava CANCELADO aqui mesmo com a API recusando, e a venda era
+  // cancelada com a order ainda viva no aparelho — o cliente pagava e o dinheiro caía numa
+  // venda cancelada. Agora: consulta o estado real, tenta cancelar, e reconsulta pra só
+  // marcar CANCELADO quando o Mercado Pago confirma.
+  const antes = await obterOrderOuNull(accessToken, pagamento.paymentIntentId);
+  if (antes && !ORDER_STATUS_ATIVOS.includes(antes.status)) {
+    // Já resolvida (paga, recusada, expirada ou cancelada) — só sincroniza. Se foi paga, a
+    // venda é confirmada aqui e a resposta volta com resumo.completo = true.
+    await aplicarStatusIntent(pagamento, antes, accessToken);
+    return montarResumo(id);
   }
 
-  await prisma.pagamentoPointMP.update({ where: { id: pagamento.id }, data: { status: 'CANCELADO' } });
+  if (antes) {
+    try {
+      await mpClient.cancelarOrder(accessToken, pagamento.paymentIntentId, { atTerminal: antes.status !== 'created' });
+    } catch (err) {
+      if (err.mpStatus !== 404) {
+        console.error(`Mercado Pago recusou cancelar a order ${pagamento.paymentIntentId} (venda ${id}):`, err.message);
+      }
+    }
+  }
+
+  let depois = await obterOrderOuNull(accessToken, pagamento.paymentIntentId);
+  if (depois && ORDER_STATUS_ATIVOS.includes(depois.status)) {
+    await new Promise((r) => setTimeout(r, 1500));
+    depois = await obterOrderOuNull(accessToken, pagamento.paymentIntentId);
+  }
+
+  if (!depois) {
+    // 404: a order não existe mais no Mercado Pago — não há como ela ser paga.
+    await prisma.pagamentoPointMP.update({ where: { id: pagamento.id }, data: { status: 'CANCELADO' } });
+    return montarResumo(id);
+  }
+
+  const atualizado = await aplicarStatusIntent(pagamento, depois, accessToken);
+  if (STATUS_MP_ATIVOS.includes(atualizado.status)) {
+    throw erro(
+      409,
+      'A maquininha não liberou o cancelamento — o cliente pode estar pagando agora. Cancele direto na maquininha ou aguarde: se o pagamento passar, a venda é confirmada sozinha.'
+    );
+  }
   return montarResumo(id);
+}
+
+const ORDER_STATUS_ATIVOS = ['created', 'at_terminal', 'action_required'];
+
+// GET da order; null só quando o Mercado Pago responde 404 (order inexistente). Qualquer outra
+// falha (rede, 5xx) propaga — sem saber o estado real não dá pra afirmar que foi cancelada.
+async function obterOrderOuNull(accessToken, orderId) {
+  try {
+    return await mpClient.obterOrder(accessToken, orderId);
+  } catch (err) {
+    if (err.mpStatus === 404) return null;
+    throw err;
+  }
 }
 
 async function listarStatusPagamentos(vendaId) {
@@ -368,16 +418,30 @@ async function aplicarStatusIntent(pagamento, order, accessToken) {
 // order (que já é único e foi salvo na criação) e usa o caixaId que já estava gravado nele
 // pra saber com qual token da conta consultar de volta — nunca confiamos no corpo da
 // notificação pra decidir se um pagamento foi aprovado, só como gatilho pra reconsultar.
-async function processarWebhook(payload) {
-  const orderId = (payload && (payload.id || (payload.data && payload.data.id))) || undefined;
-  if (!orderId) return;
+async function processarWebhook(payload, query = {}) {
+  // No formato de notificação do Mercado Pago, o "id" de primeiro nível é o id da própria
+  // notificação; o id da order vem em data.id (ou na query ?data.id=). Antes o "id" de primeiro
+  // nível tinha prioridade — se ele vier preenchido, a order nunca era encontrada e o webhook
+  // era ignorado em silêncio (a confirmação ficava dependendo só da tela do caixa aberta).
+  const candidatos = [payload?.data?.id, query['data.id'], query.id, payload?.id]
+    .filter((v) => v !== undefined && v !== null && v !== '')
+    .map(String);
+  if (candidatos.length === 0) return;
 
-  const pagamento = await prisma.pagamentoPointMP.findUnique({ where: { paymentIntentId: orderId }, include: { caixa: true } });
+  const pagamento = await prisma.pagamentoPointMP.findFirst({
+    where: { paymentIntentId: { in: candidatos } },
+    include: { caixa: true, venda: { select: { status: true } } },
+  });
   if (!pagamento || !pagamento.caixa?.mpAccessTokenEnc) return;
 
   const accessToken = crypto.decrypt(pagamento.caixa.mpAccessTokenEnc);
   const order = await mpClient.obterOrder(accessToken, pagamento.paymentIntentId);
-  await aplicarStatusIntent(pagamento, order, accessToken);
+  const atualizado = await aplicarStatusIntent(pagamento, order, accessToken);
+  if (atualizado.status === 'APROVADO' && pagamento.venda?.status === 'CANCELADA') {
+    console.error(
+      `ATENÇÃO: pagamento de R$ ${Number(pagamento.valor).toFixed(2)} aprovado na maquininha para a venda ${pagamento.vendaId}, que está CANCELADA — o cliente pagou e não há venda confirmada. Reabrir/confirmar ou estornar.`
+    );
+  }
 }
 
 // "Relatório da maquininha" pra comparar com o que o sistema registrou no fechamento de

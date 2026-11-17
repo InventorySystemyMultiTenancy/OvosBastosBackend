@@ -45,7 +45,7 @@ async function remover(req, res, next) {
 // mercadopago.service.processarWebhook).
 async function webhook(req, res) {
   try {
-    await service.processarWebhook(req.body);
+    await service.processarWebhook(req.body, req.query);
   } catch (err) {
     console.error('Erro ao processar webhook Mercado Pago:', err);
   }

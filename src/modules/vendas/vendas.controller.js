@@ -153,17 +153,35 @@ async function cancelar(req, res, next) {
       });
     }
 
-    // Cancelar a venda sem liberar a maquininha deixa o device travado com o intent aberto
-    // (erro 2205 do Mercado Pago na próxima cobrança). Se falhar, segue cancelando a venda mesmo
-    // assim e só loga — o usuário pode tentar cancelar a cobrança de novo depois.
+    // Com cobrança ainda em aberto na maquininha, a venda só é cancelada se o Mercado Pago
+    // confirmar o cancelamento da order. Antes, se a API recusasse (cliente já inserindo o
+    // cartão), a venda era cancelada mesmo assim e a order seguia viva no aparelho: o cliente
+    // pagava e o dinheiro caía numa venda cancelada, sem confirmação no sistema.
     const cobrancaAtiva = venda.pagamentosPointMP.find((p) => ['PENDENTE', 'EM_PROCESSO'].includes(p.status));
     if (cobrancaAtiva) {
-      await mpService.cancelarCobranca(id).catch((err) => {
-        console.error(`Falha ao cancelar cobrança Mercado Pago da venda ${id} ao cancelar a venda:`, err.message);
-      });
+      try {
+        await mpService.cancelarCobranca(id);
+      } catch (err) {
+        return res.status(err.status === 409 ? 409 : 502).json({
+          error: `A venda não foi cancelada: ${err.message}`,
+        });
+      }
+      // O cancelamento pode ter descoberto que o cliente já pagou (e a venda foi confirmada).
+      const atual = await prisma.venda.findUnique({ where: { id }, include: { pagamentosPointMP: true } });
+      if (atual.status !== 'ORCAMENTO' || atual.pagamentosPointMP.some((p) => p.status === 'APROVADO')) {
+        return res.status(409).json({
+          error: 'O cliente já pagou na maquininha — a venda não foi cancelada.',
+        });
+      }
     }
 
-    const vendaCancelada = await prisma.venda.update({ where: { id }, data: { status: 'CANCELADA' } });
+    // updateMany com status ORCAMENTO no where: se um webhook de aprovação confirmou a venda
+    // entre a checagem acima e aqui, não sobrescreve CONFIRMADA com CANCELADA.
+    const { count } = await prisma.venda.updateMany({ where: { id, status: 'ORCAMENTO' }, data: { status: 'CANCELADA' } });
+    if (count === 0) {
+      return res.status(409).json({ error: 'A venda mudou de status (provavelmente foi paga) e não foi cancelada.' });
+    }
+    const vendaCancelada = await prisma.venda.findUnique({ where: { id } });
     res.json(vendaCancelada);
   } catch (err) {
     next(err);
